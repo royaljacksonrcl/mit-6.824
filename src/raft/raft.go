@@ -76,9 +76,10 @@ type Raft struct {
 	votes       int
 	votedFor    RoleID
 	heartbeatCh chan bool
+	voteResult  chan RequestVoteReply
 
-	heartbeatTimeout time.Duration
-	electTimeout     time.Duration
+	heartbeatInterval time.Duration
+	electTimeout      time.Duration
 }
 
 // return currentTerm and whether this server
@@ -89,6 +90,13 @@ func (rf *Raft) GetState() (int, bool) {
 	var isleader bool
 	// Your code here (2A).
 	return term, isleader
+}
+
+func (rf *Raft) VoteClear(term Term) {
+	rf.role = Follower
+	rf.currentTerm = term
+	rf.votes = 0
+	rf.votedFor = -1
 }
 
 // save Raft's persistent state to stable storage,
@@ -147,24 +155,43 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 // field names must start with capital letters!
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
-	cadidateTerm Term
-	cadidateId   RoleID
+	CadidateTerm Term
+	CadidateId   RoleID
 
-	lastLogIndex int
-	lastLogTerm  Term
+	LastLogIndex int
+	LastLogTerm  Term
 }
 
 // example RequestVote RPC reply structure.
 // field names must start with capital letters!
 type RequestVoteReply struct {
 	// Your data here (2A).
-	term        Term
-	voteGranted RoleID
+	VoteTerm    Term
+	VoteGranted bool
 }
 
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+
+}
+
+// AppendEntries RPC arguments structure
+type AppendEntriesArgs struct {
+	LeaderTerm   Term
+	LeaderID     RoleID
+	PrevLogIndex uint64
+	PrevLogTerm  Term
+}
+
+// AppendEntries RPC reply structure
+type AppendEntriesReply struct {
+	CurrentTerm Term
+	Success     bool //true if follower contained entry matching prevLogIndex and prevLogTerm
+}
+
+// AppendEntries RPC handler
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 
 }
 
@@ -197,6 +224,11 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // the struct itself.
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+	return ok
+}
+
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	return ok
 }
 
@@ -243,7 +275,7 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) runAsFollower() {
-	timeout := rf.heartbeatTimeout + time.Duration(rand.Intn(100))*time.Millisecond
+	timeout := rf.heartbeatInterval + time.Duration(rand.Intn(100))*time.Millisecond
 
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -274,10 +306,86 @@ func (rf *Raft) runAsCandidate() {
 	rf.currentTerm++
 	rf.votes = 1
 	rf.votedFor = RoleID(rf.me)
+	rf.mu.Unlock()
+
+	for index := range rf.peers {
+		if index != rf.me {
+			args := RequestVoteArgs{
+				CadidateTerm: rf.currentTerm,
+				CadidateId:   RoleID(rf.me),
+			}
+
+			go func(serverid int) {
+				var reply RequestVoteReply
+				if rf.sendRequestVote(serverid, &args, &reply) {
+					rf.voteResult <- reply
+				}
+			}(index)
+		}
+	}
+
+	timer := time.NewTicker(rf.electTimeout + time.Duration(rand.Intn(150))*time.Millisecond)
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-timer.C:
+			rf.mu.Lock()
+			defer rf.mu.Unlock()
+			if rf.votes > len(rf.peers)/2 {
+				rf.role = Leader
+			} else {
+				rf.VoteClear(rf.currentTerm)
+			}
+			return
+		case reply := <-rf.voteResult:
+			rf.mu.Lock()
+			if reply.VoteGranted {
+				rf.votes++
+				if rf.votes > len(rf.peers)/2 {
+					rf.role = Leader
+					rf.mu.Unlock()
+					return
+				}
+			} else if reply.VoteTerm > rf.currentTerm {
+				rf.VoteClear(reply.VoteTerm)
+				rf.mu.Unlock()
+				return
+			} else {
+				rf.mu.Unlock()
+			}
+		}
+	}
 }
 
 func (rf *Raft) runAsLeader() {
+	ticker := time.NewTicker(rf.heartbeatInterval)
+	defer ticker.Stop()
 
+	for {
+		rf.mu.Lock()
+		if rf.role != Leader {
+			rf.mu.Unlock()
+			return
+		}
+		rf.mu.Unlock()
+
+		rf.SendHeartsBeats()
+	}
+}
+
+func (rf *Raft) SendHeartsBeats() {
+	rf.mu.Lock()
+	args := AppendEntriesArgs{
+		LeaderTerm: rf.currentTerm,
+		LeaderID:   RoleID(rf.me),
+	}
+	for index := range rf.peers {
+		go func(server int) {
+			var reply AppendEntriesReply
+			rf.sendAppendEntries(server, &args, &reply)
+		}(index)
+	}
 }
 
 // The ticker go routine starts a new election if this peer hasn't received
@@ -321,15 +429,18 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.currentTerm = 0
 	rf.votes = 0
 	rf.votedFor = -1
-	rf.heartbeatTimeout = 100 * time.Millisecond
-	rf.electTimeout = 500 * time.Millisecond
+	rf.heartbeatInterval = 100 * time.Millisecond
+	rf.electTimeout = 300 * time.Millisecond
 	rf.heartbeatCh = make(chan bool, 2)
+	rf.voteResult = make(chan RequestVoteReply, len(peers)-1)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
+
+	fmt.Printf("Make No.%v Success, start ticker.\n", me)
 
 	return rf
 }

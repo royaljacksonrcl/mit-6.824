@@ -277,7 +277,6 @@ func (cfg *config) applierSnap(i int, applyCh chan ApplyMsg) {
 // state persister, to isolate previous instance of
 // this server. since we cannot really kill it.
 func (cfg *config) start1(i int, applier func(int, chan ApplyMsg)) {
-	fmt.Print("start1\n")
 	cfg.crash1(i)
 
 	// a fresh set of outgoing ClientEnd names.
@@ -306,7 +305,7 @@ func (cfg *config) start1(i int, applier func(int, chan ApplyMsg)) {
 		cfg.saved[i] = cfg.saved[i].Copy()
 
 		snapshot := cfg.saved[i].ReadSnapshot()
-		if snapshot != nil && len(snapshot) > 0 {
+		if len(snapshot) > 0 {
 			// mimic KV server and process snapshot now.
 			// ideally Raft should send it up on applyCh...
 			err := cfg.ingestSnap(i, snapshot, -1)
