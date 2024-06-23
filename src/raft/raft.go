@@ -71,12 +71,12 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-	role        Role
-	currentTerm Term
-	votes       int
-	votedFor    RoleID
-	heartbeatCh chan bool
-	voteResult  chan RequestVoteReply
+	role         Role
+	currentTerm  Term
+	votes        int
+	votedFor     RoleID
+	heartbeatCh  chan bool
+	voteResultCh chan RequestVoteReply
 
 	heartbeatInterval time.Duration
 	electTimeout      time.Duration
@@ -86,9 +86,10 @@ type Raft struct {
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
 
-	var term int
-	var isleader bool
+	var term = int(rf.currentTerm)
+	var isleader = (rf.votedFor == RoleID(rf.me))
 	// Your code here (2A).
+	fmt.Printf("No.%v return %v %v\n", rf.me, term, isleader)
 	return term, isleader
 }
 
@@ -155,8 +156,8 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 // field names must start with capital letters!
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
-	CadidateTerm Term
-	CadidateId   RoleID
+	CandidateTerm Term
+	CandidateId   RoleID
 
 	LastLogIndex int
 	LastLogTerm  Term
@@ -173,7 +174,27 @@ type RequestVoteReply struct {
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
+	if args.CandidateTerm > rf.currentTerm {
+		rf.role = Follower
+		rf.currentTerm = args.CandidateTerm
+		rf.votedFor = -1
+	}
+
+	reply.VoteTerm = rf.currentTerm
+
+	// 如果当前节点还没有投票，并且候选人的任期不小于当前节点的任期，则投票
+	if (rf.votedFor == -1 || rf.votedFor == args.CandidateId) && args.CandidateTerm >= rf.currentTerm {
+		rf.votedFor = args.CandidateId
+		reply.VoteGranted = true
+	} else {
+		reply.VoteGranted = false
+		if rf.votedFor != -1 && rf.votedFor != args.CandidateId {
+			fmt.Printf("Server %d refused to vote for %d, already voted for %d\n", rf.me, args.CandidateId, rf.votedFor)
+		}
+	}
 }
 
 // AppendEntries RPC arguments structure
@@ -182,6 +203,8 @@ type AppendEntriesArgs struct {
 	LeaderID     RoleID
 	PrevLogIndex uint64
 	PrevLogTerm  Term
+	Entries      []LogEntry
+	LeaderCommit int
 }
 
 // AppendEntries RPC reply structure
@@ -190,8 +213,32 @@ type AppendEntriesReply struct {
 	Success     bool //true if follower contained entry matching prevLogIndex and prevLogTerm
 }
 
+type LogEntry struct {
+	CurrentTerm Term
+	Command     interface{}
+}
+
 // AppendEntries RPC handler
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if rf.currentTerm > args.LeaderTerm {
+		// 当前节点的人任期更大时，拒绝收到的请求
+		reply.CurrentTerm = rf.currentTerm
+		reply.Success = false
+		return
+	}
+
+	//更新当前节点信息
+	rf.currentTerm = args.LeaderTerm
+	rf.votedFor = args.LeaderID
+	rf.role = Follower
+
+	//日志更新
+
+	reply.CurrentTerm = rf.currentTerm
+	reply.Success = true
 
 }
 
@@ -266,7 +313,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
-	fmt.Print("current call kill")
+	fmt.Print("current call kill\n")
 }
 
 func (rf *Raft) killed() bool {
@@ -311,14 +358,14 @@ func (rf *Raft) runAsCandidate() {
 	for index := range rf.peers {
 		if index != rf.me {
 			args := RequestVoteArgs{
-				CadidateTerm: rf.currentTerm,
-				CadidateId:   RoleID(rf.me),
+				CandidateTerm: rf.currentTerm,
+				CandidateId:   RoleID(rf.me),
 			}
 
 			go func(serverid int) {
 				var reply RequestVoteReply
 				if rf.sendRequestVote(serverid, &args, &reply) {
-					rf.voteResult <- reply
+					rf.voteResultCh <- reply
 				}
 			}(index)
 		}
@@ -331,19 +378,16 @@ func (rf *Raft) runAsCandidate() {
 		select {
 		case <-timer.C:
 			rf.mu.Lock()
-			defer rf.mu.Unlock()
-			if rf.votes > len(rf.peers)/2 {
-				rf.role = Leader
-			} else {
-				rf.VoteClear(rf.currentTerm)
-			}
-			return
-		case reply := <-rf.voteResult:
+			rf.VoteClear(rf.currentTerm)
+			rf.mu.Unlock()
+		case reply := <-rf.voteResultCh:
 			rf.mu.Lock()
+			fmt.Printf("No.%v receive Term-%v VoteGranted = %v\n", rf.me, reply.VoteTerm, reply.VoteGranted)
 			if reply.VoteGranted {
 				rf.votes++
 				if rf.votes > len(rf.peers)/2 {
 					rf.role = Leader
+					fmt.Printf("No.%v become new leader.\n", rf.me)
 					rf.mu.Unlock()
 					return
 				}
@@ -370,6 +414,7 @@ func (rf *Raft) runAsLeader() {
 		}
 		rf.mu.Unlock()
 
+		fmt.Print("start to send heartbeats\n")
 		rf.SendHeartsBeats()
 	}
 }
@@ -432,7 +477,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.heartbeatInterval = 100 * time.Millisecond
 	rf.electTimeout = 300 * time.Millisecond
 	rf.heartbeatCh = make(chan bool, 2)
-	rf.voteResult = make(chan RequestVoteReply, len(peers)-1)
+	rf.voteResultCh = make(chan RequestVoteReply, len(peers)-1)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
