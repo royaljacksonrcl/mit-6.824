@@ -86,6 +86,20 @@ func LOGPRINT(level loglevel, submodule logModule, format string, a ...interface
 	}
 }
 
+func LOGOUT(level loglevel) bool {
+	logmu.RLock()
+	defer logmu.RUnlock()
+	return logVerbose >= level
+}
+
+func MININT(a, b int) int {
+	if a < b {
+		return a
+	}
+
+	return b
+}
+
 /*func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if logVerbose >= DEBUG {
 		log.Printf(format, a...)

@@ -360,7 +360,7 @@ func (cfg *config) cleanup() {
 
 // attach server i to the net.
 func (cfg *config) connect(i int) {
-	// fmt.Printf("connect(%d)\n", i)
+	fmt.Printf("test connect(%d)\n", i)
 
 	cfg.connected[i] = true
 
@@ -383,7 +383,7 @@ func (cfg *config) connect(i int) {
 
 // detach server i from the net.
 func (cfg *config) disconnect(i int) {
-	fmt.Printf("disconnect(%d)\n", i)
+	fmt.Printf("test disconnect(%d)\n", i)
 
 	cfg.connected[i] = false
 
@@ -433,6 +433,7 @@ func (cfg *config) checkOneLeader() int {
 	for iters := 0; iters < 10; iters++ {
 		ms := 450 + (rand.Int63() % 100)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
+		fmt.Printf("cfg.checkOneLeader: Sleep for %v msec.\n", ms)
 
 		leaders := make(map[int][]int)
 		for i := 0; i < cfg.n; i++ {
@@ -561,7 +562,7 @@ func (cfg *config) wait(index int, n int, startTerm int) interface{} {
 func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 	t0 := time.Now()
 	starts := 0
-	for time.Since(t0).Seconds() < 10 && cfg.checkFinished() == false {
+	for time.Since(t0).Seconds() < 10 && !cfg.checkFinished() {
 		// try all the servers, maybe one is the leader.
 		index := -1
 		for si := 0; si < cfg.n; si++ {
@@ -595,12 +596,14 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 					}
 				}
 				time.Sleep(20 * time.Millisecond)
+				fmt.Printf("cfg.one: Sleep 20 msec.\n")
 			}
 			if retry == false {
 				cfg.t.Fatalf("one(%v) failed to reach agreement", cmd)
 			}
 		} else {
 			time.Sleep(50 * time.Millisecond)
+			fmt.Printf("cfg.one: Sleep 50 msec.\n")
 		}
 	}
 	if cfg.checkFinished() == false {
