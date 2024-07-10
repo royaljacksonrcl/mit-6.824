@@ -100,8 +100,6 @@ type Raft struct {
 	voteResultCh chan RequestVoteReply
 	applyCh      chan ApplyMsg
 
-	electionTimer time.Timer
-
 	//Volatile state on all servers
 	CommitIndex int
 	LastApplied int
@@ -238,6 +236,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			reply.VoteGranted = true
 			LOGPRINT(INFO, dVote, "No.%v args.CandidateTerm = %v, rf.currentTerm = %v\n", rf.me, args.CandidateTerm, rf.currentTerm)
 			LOGPRINT(DEBUG, dVote, "No.%v(CurrentTerm=%v) agree to vote for No.%v\n", rf.me, rf.currentTerm, rf.votedFor)
+			if rf.role == Follower && len(rf.heartbeatCh) < 1 {
+				rf.heartbeatCh <- true
+			}
 			rf.persist()
 		} else {
 			reply.VoteGranted = false
@@ -297,7 +298,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	//reset heartsbeats
-	LOGPRINT(INFO, dClient, "No.%v receive appendentries %v from No.%v, PrevLogIndex = %v\n", rf.me, args.Entries, args.LeaderID, args.PrevLogIndex)
+	LOGPRINT(INFO, dClient, "No.%v receive appendentries %v from No.%v, PrevLogIndex = %v PrevLogTerm = %v", rf.me, args.Entries, args.LeaderID, args.PrevLogIndex, args.PrevLogTerm)
 	if rf.role == Follower {
 		rf.heartbeatCh <- true
 	}
@@ -309,10 +310,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = false
 		if args.PrevLogIndex >= len(rf.log) {
 			reply.LastLogIndex = len(rf.log) - 1
-		} else {
-			reply.LastLogIndex = -1
+		} else if args.PrevLogTerm != rf.log[args.PrevLogIndex].Term {
+			tmpLogTerm := rf.log[args.PrevLogIndex].Term
+			tmpIndex := args.PrevLogIndex
+			for tmpIndex > 0 && tmpLogTerm == rf.log[tmpIndex].Term && tmpIndex > rf.CommitIndex {
+				tmpIndex--
+			}
+			reply.LastLogIndex = tmpIndex
 		}
-
 		return
 	}
 
@@ -322,11 +327,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
+	LOGPRINT(INFO, dLog, "Before %v + %v from %v", rf.log, args.Entries, args.PrevLogIndex+1)
 	rf.log = append(rf.log[:args.PrevLogIndex+1], args.Entries...)
 	if args.LeaderCommit > rf.CommitIndex {
 		rf.CommitIndex = MININT(args.LeaderCommit, len(rf.log)-1)
 		rf.persist()
 	}
+	LOGPRINT(INFO, dLog, "After %v", rf.log)
 
 	LOGPRINT(INFO, dLog2, "No.%v %v CommitIndex=%v LastApplied=%v\n", rf.me, rf.log, rf.CommitIndex, rf.LastApplied)
 
@@ -462,6 +469,9 @@ func (rf *Raft) runAsFollower() {
 		case val := <-rf.heartbeatCh:
 			LOGPRINT(INFO, dClient, "No.%v Follower receive heartbeat val = %v\n", rf.me, val)
 			if val {
+				if !timer.Stop() {
+					<-timer.C
+				}
 				timer.Reset(timeout)
 			} else {
 				rf.mu.Lock()
@@ -508,6 +518,8 @@ func (rf *Raft) runAsCandidate() {
 					}
 					rf.voteResultCh <- reply
 					LOGPRINT(INFO, dVote, "No.%v receive reply->voteResultCh(%v) from No.%v", rf.me, len(rf.voteResultCh), serverid)
+				} else {
+					LOGPRINT(INFO, dVote, "No.%v send to No.%v Failed.\n", rf.me, serverid)
 				}
 			}(index)
 		}
@@ -683,6 +695,7 @@ func (rf *Raft) updateCommitIndex() {
 		}
 	}
 	if UpdateIndex > rf.CommitIndex {
+		LOGPRINT(DEBUG, dLog, "No.%v updateCommitIndex To %v", rf.me, UpdateIndex)
 		rf.CommitIndex = UpdateIndex
 		rf.persist()
 		go rf.ApplyLogs()
