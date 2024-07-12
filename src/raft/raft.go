@@ -218,6 +218,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.role = Follower
 		rf.currentTerm = args.CandidateTerm
 		rf.votedFor = -1
+		rf.persist()
 	}
 
 	reply.VoteTerm = rf.currentTerm
@@ -340,7 +341,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = true
 		if args.LeaderCommit > rf.CommitIndex {
 			rf.CommitIndex = MININT(args.LeaderCommit, len(rf.log)-1)
-			rf.persist()
 		}
 		go rf.ApplyLogs()
 		return
@@ -677,11 +677,12 @@ func (rf *Raft) SendAppendEntry() {
 						rf.role = Follower
 						rf.currentTerm = reply.Term
 						rf.votedFor = -1
+						rf.persist()
 						return
 					}
 
 					if rf.role == Leader && reply.Success {
-						if prevLogIndex+1+len(entries) > rf.NextIndex[server] {
+						if prevLogIndex+1+len(entries) >= rf.NextIndex[server] {
 							rf.NextIndex[server] = prevLogIndex + 1 + len(entries)
 							rf.MatchIndex[server] = rf.NextIndex[server] - 1
 						}
