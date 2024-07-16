@@ -291,6 +291,7 @@ func (rf *Raft) DropHistoryEntries(args *AppendEntriesArgs) bool {
 
 // AppendEntries RPC handler
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	LOGPRINT(INFO, dLog, "C.%v receive Entries.\n", rf.me)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
@@ -357,15 +358,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	LOGPRINT(INFO, dLog2, "C.%v %v CommitIndex=%v LastApplied=%v\n", rf.me, rf.log, rf.CommitIndex, rf.LastApplied)
 
 	go rf.ApplyLogs()
-	/*for rf.LastApplied < rf.CommitIndex {
-		rf.LastApplied++
-		applyMsg := ApplyMsg{
-			CommandValid: true,
-			Command:      rf.log[rf.LastApplied].Command,
-			CommandIndex: rf.LastApplied,
-		}
-		rf.applyCh <- applyMsg
-	}*/
 
 	reply.Term = rf.currentTerm
 	reply.Success = true
@@ -614,8 +606,8 @@ func (rf *Raft) runAsLeader() {
 	for {
 		rf.mu.Lock()
 		if rf.role != Leader || rf.killed() {
-			rf.mu.Unlock()
 			LOGPRINT(WARNING, dLeader, "C.%v Term.%v loop=%v is not Leader anymore.\n", rf.me, rf.currentTerm, loop)
+			rf.mu.Unlock()
 			return
 		}
 		rf.mu.Unlock()
