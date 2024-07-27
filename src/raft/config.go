@@ -224,12 +224,15 @@ func (cfg *config) applierSnap(i int, applyCh chan ApplyMsg) {
 	for m := range applyCh {
 		err_msg := ""
 		if m.SnapshotValid {
+			fmt.Printf("C.%v 1 Snapshot\n", i)
 			if rf.CondInstallSnapshot(m.SnapshotTerm, m.SnapshotIndex, m.Snapshot) {
 				cfg.mu.Lock()
 				err_msg = cfg.ingestSnap(i, m.Snapshot, m.SnapshotIndex)
 				cfg.mu.Unlock()
 			}
+			fmt.Printf("C.%v 2 Snapshot\n", i)
 		} else if m.CommandValid {
+			fmt.Printf("C.%v index %v\n", i, m.CommandIndex)
 			if m.CommandIndex != cfg.lastApplied[i]+1 {
 				err_msg = fmt.Sprintf("server %v apply out of order, expected index %v, got %v", i, cfg.lastApplied[i]+1, m.CommandIndex)
 			}
@@ -360,7 +363,6 @@ func (cfg *config) cleanup() {
 
 // attach server i to the net.
 func (cfg *config) connect(i int) {
-	fmt.Printf("test connect(%d)\n", i)
 
 	cfg.connected[i] = true
 
@@ -383,7 +385,6 @@ func (cfg *config) connect(i int) {
 
 // detach server i from the net.
 func (cfg *config) disconnect(i int) {
-	fmt.Printf("test disconnect(%d)\n", i)
 
 	cfg.connected[i] = false
 
@@ -596,14 +597,12 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 					}
 				}
 				time.Sleep(20 * time.Millisecond)
-				fmt.Printf("cfg.one: Sleep 20 msec.\n")
 			}
 			if retry == false {
 				cfg.t.Fatalf("one(%v) failed to reach agreement", cmd)
 			}
 		} else {
 			time.Sleep(50 * time.Millisecond)
-			fmt.Printf("cfg.one: Sleep 50 msec.\n")
 		}
 	}
 	if cfg.checkFinished() == false {
