@@ -224,15 +224,12 @@ func (cfg *config) applierSnap(i int, applyCh chan ApplyMsg) {
 	for m := range applyCh {
 		err_msg := ""
 		if m.SnapshotValid {
-			fmt.Printf("C.%v 1 Snapshot\n", i)
 			if rf.CondInstallSnapshot(m.SnapshotTerm, m.SnapshotIndex, m.Snapshot) {
 				cfg.mu.Lock()
 				err_msg = cfg.ingestSnap(i, m.Snapshot, m.SnapshotIndex)
 				cfg.mu.Unlock()
 			}
-			fmt.Printf("C.%v 2 Snapshot\n", i)
 		} else if m.CommandValid {
-			fmt.Printf("C.%v index %v\n", i, m.CommandIndex)
 			if m.CommandIndex != cfg.lastApplied[i]+1 {
 				err_msg = fmt.Sprintf("server %v apply out of order, expected index %v, got %v", i, cfg.lastApplied[i]+1, m.CommandIndex)
 			}
@@ -434,7 +431,6 @@ func (cfg *config) checkOneLeader() int {
 	for iters := 0; iters < 10; iters++ {
 		ms := 450 + (rand.Int63() % 100)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
-		fmt.Printf("cfg.checkOneLeader: Sleep for %v msec.\n", ms)
 
 		leaders := make(map[int][]int)
 		for i := 0; i < cfg.n; i++ {
