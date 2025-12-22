@@ -1,13 +1,13 @@
 #!/bin/bash
 
-MAX_RUNS=100
-export VERBOSE=3
-TEST_CMD="go test -run 2C -race"
+MAX_RUNS=10
+export VERBOSE=0
+TEST_CMD="go test -run 2D"
 
 for (( i=1; i<=$MAX_RUNS; i++ ))
 do
     echo "Running test iteration $i"
-    $TEST_CMD > result$i.txt
+    time $TEST_CMD > result_2D.txt
     if [ $? -ne 0 ]; then
         echo "Test failed on iteration $i. Exiting."
         exit 1

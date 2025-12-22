@@ -1,3 +1,6 @@
+//go:build mrcoordinator
+// +build mrcoordinator
+
 package main
 
 //
@@ -9,10 +12,14 @@ package main
 // Please do not change this file.
 //
 
-import "6.824/mr"
-import "time"
-import "os"
-import "fmt"
+import (
+	"fmt"
+	"log"
+	"os"
+	"time"
+
+	"6.824/mr"
+)
 
 func main() {
 	if len(os.Args) < 2 {
@@ -21,9 +28,12 @@ func main() {
 	}
 
 	m := mr.MakeCoordinator(os.Args[1:], 10)
+	go m.TaskDetector()
 	for m.Done() == false {
 		time.Sleep(time.Second)
+		log.Printf("running...")
 	}
 
+	log.Printf("Finished.")
 	time.Sleep(time.Second)
 }

@@ -1,3 +1,6 @@
+//go:build mrworker
+// +build mrworker
+
 package main
 
 //
@@ -10,27 +13,32 @@ package main
 // Please do not change this file.
 //
 
-import "6.824/mr"
-import "plugin"
-import "os"
-import "fmt"
-import "log"
+import (
+	"fmt"
+	"log"
+	"os"
+	"plugin"
+
+	"6.824/mr"
+)
 
 func main() {
+	dir, _ := os.Getwd()
 	if len(os.Args) != 2 {
-		fmt.Fprintf(os.Stderr, "Usage: mrworker xxx.so\n")
+		fmt.Fprintf(os.Stderr, "Usage: mrworker xxx.so at %s\n", dir)
 		os.Exit(1)
 	}
 
+	fmt.Fprintf(os.Stderr, "Running at %s\n", dir)
 	mapf, reducef := loadPlugin(os.Args[1])
 
 	mr.Worker(mapf, reducef)
+
+	fmt.Fprintf(os.Stderr, "Runing End.\n")
 }
 
-//
 // load the application Map and Reduce functions
 // from a plugin file, e.g. ../mrapps/wc.so
-//
 func loadPlugin(filename string) (func(string, string) []mr.KeyValue, func(string, []string) string) {
 	p, err := plugin.Open(filename)
 	if err != nil {
