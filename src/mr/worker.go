@@ -50,8 +50,6 @@ func Worker(mapf func(string, string) []KeyValue,
 			return
 		}
 
-		log.Printf("Worker Running...Got Task.%d", rsp.TaskID)
-
 		// 处理任务
 		switch rsp.TaskType {
 		case TaskMap:
@@ -135,7 +133,7 @@ func handleMapTask(maptask GetTaskReply, mapf func(string, string) []KeyValue) {
 	// 关闭临时文件
 	for i, file := range file_list {
 		file.fileHandle.Close()
-		final_name := fmt.Sprintf("rm-%d-%d", maptask.TaskID, i)
+		final_name := fmt.Sprintf("mr-%d-%d", maptask.TaskID, i)
 		os.Rename(file.fileHandle.Name(), final_name)
 		ret = true
 	}

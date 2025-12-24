@@ -95,7 +95,7 @@ func (c *Coordinator) GetTask(
 			reply.TaskType = TaskWait
 			return nil
 		}
-
+		log.Printf("All Map Tasks Done. Switch to Reduce Phase.\n")
 		c.phase = TaskReduce
 	}
 
@@ -199,7 +199,7 @@ func (c *Coordinator) TaskDetector() {
 
 		if c.phase == TaskReduce {
 			for i := range c.reduceTasks {
-				if c.reduceTasks[i].taskState == Processing && time.Since(c.mapJobs[i].startTime) > timeout {
+				if c.reduceTasks[i].taskState == Processing && time.Since(c.reduceTasks[i].startTime) > timeout {
 					c.reduceTasks[i].taskState = Idle // 重置，等待下次分配
 				}
 			}
