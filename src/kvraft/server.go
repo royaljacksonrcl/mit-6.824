@@ -19,6 +19,13 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
+func ServicePrintf(format string, a ...interface{}) {
+	// Uncomment for debugging
+	prefix := "[Service] "
+	format = prefix + format
+	DPrintf(format, a...)
+}
+
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
@@ -99,10 +106,8 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	ResChnl := kv.resultChnl[index]
 	kv.mu.Unlock()
 
-	select {
-	case result := <-ResChnl:
-		reply.Err = result.Err
-	}
+	result := <-ResChnl
+	reply.Err = result.Err
 }
 
 // the tester calls Kill() when a KVServer instance won't
@@ -164,12 +169,13 @@ func (kv *KVServer) DealAppliedCmd() {
 	for msg := range kv.applyCh {
 		if msg.CommandValid {
 			cmd := msg.Command.(Op)
-			DPrintf("Applied Cmd [%v]", cmd)
+			ServicePrintf("Applied Cmd [%v]", cmd)
 			kv.mu.Lock()
 			if !kv.isDuplicateRequest(cmd) {
-				if cmd.Type == "Put" {
+				switch cmd.Type {
+				case "Put":
 					kv.kvstore[cmd.Key] = cmd.Value
-				} else if cmd.Type == "Append" {
+				case "Append":
 					kv.kvstore[cmd.Key] += cmd.Value
 				}
 				kv.lastAppliedCmd[cmd.ClientId] = cmd.RequestId
@@ -184,6 +190,7 @@ func (kv *KVServer) DealAppliedCmd() {
 					} else {
 						result.Err = ErrNoKey
 					}
+					ServicePrintf("Get Key=%v Value=%v", cmd.Key, result.Value)
 				} else {
 					result.Err = OK
 				}

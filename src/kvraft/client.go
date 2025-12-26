@@ -36,6 +36,13 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	return ck
 }
 
+func ClientPrintf(format string, a ...interface{}) {
+	// Uncomment for debugging
+	prefix := "[Client] "
+	format = prefix + format
+	DPrintf(format, a...)
+}
+
 // fetch the current value for a key.
 // returns "" if the key does not exist.
 // keeps trying forever in the face of all other errors.
@@ -56,11 +63,13 @@ func (ck *Clerk) Get(key string) string {
 	var tryagain int = len(ck.servers)
 
 	for {
-		DPrintf(" Client send Get key=%v to C.%v", key, ck.leaderId)
+		ClientPrintf(" Client send Get key=%v to C.%v", key, ck.leaderId)
 		reply := GetReply{}
 		ok := ck.servers[ck.leaderId].Call("KVServer.Get", &args, &reply)
 		if ok && reply.Err == OK {
 			return reply.Value
+		} else if ok && reply.Err == ErrNoKey {
+			return ""
 		}
 		ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
 		if tryagain == 0 {
@@ -68,6 +77,7 @@ func (ck *Clerk) Get(key string) string {
 			tryagain = len(ck.servers)
 		}
 		tryagain--
+		ClientPrintf("Try %v times but not get value. Err = %v", tryagain, reply.Err)
 	}
 	//return ""
 }
@@ -101,14 +111,15 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 			return
 		}
 		ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
+		ClientPrintf("PutAppend Try again. Err=%v", reply.Err)
 	}
 }
 
 func (ck *Clerk) Put(key string, value string) {
-	DPrintf("Client send Put key=%v value=%v to C.%v", key, value, ck.leaderId)
+	ClientPrintf("Client send Put key=%v value=%v to C.%v", key, value, ck.leaderId)
 	ck.PutAppend(key, value, "Put")
 }
 func (ck *Clerk) Append(key string, value string) {
-	DPrintf("Client send Append key=%v value=%v to C.%v", key, value, ck.leaderId)
+	ClientPrintf("Client send Append key=%v value=%v to C.%v", key, value, ck.leaderId)
 	ck.PutAppend(key, value, "Append")
 }

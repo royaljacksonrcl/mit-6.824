@@ -20,7 +20,6 @@ package raft
 import (
 	//	"bytes"
 	"bytes"
-	"log"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -169,7 +168,7 @@ func (rf *Raft) persist() {
 
 // restore previously persisted state.
 func (rf *Raft) readPersist(data []byte) {
-	if data == nil || len(data) < 1 { // bootstrap without any state?
+	if len(data) < 1 { // bootstrap without any state?
 		return
 	}
 	// Your code here (2C).
@@ -543,7 +542,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.persist()
 
 	LOGPRINT(DEBUG, dLog, "C.%v Start Command {%v} Index {%v}", rf.me, command, index)
-	log.Printf("test Start(%v) - %v.\n", command, rf.me)
+	//log.Printf("test Start(%v) - %v.\n", command, rf.me)
 
 	if len(rf.startCh) < 1 && !rf.killed() {
 		rf.startCh <- true
