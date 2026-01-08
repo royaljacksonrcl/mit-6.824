@@ -70,6 +70,8 @@ func (ck *Clerk) Get(key string) string {
 			return reply.Value
 		} else if ok && reply.Err == ErrNoKey {
 			return ""
+		} else {
+			ClientPrintf("Client receive Failed reply: %v", reply.Err)
 		}
 		ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
 		if tryagain == 0 {
@@ -77,7 +79,7 @@ func (ck *Clerk) Get(key string) string {
 			tryagain = len(ck.servers)
 		}
 		tryagain--
-		ClientPrintf("Try %v times but not get value. Err = %v", tryagain, reply.Err)
+		ClientPrintf("Try %v times but not get value. C.%v, Err = %v", tryagain, ck.leaderId, reply.Err)
 	}
 	//return ""
 }
@@ -105,13 +107,14 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	}
 
 	for {
+		ClientPrintf("Client send PutAppend key=%v value=%v op=%v to C.%v", key, value, op, ck.leaderId)
 		var reply PutAppendReply
 		ret := ck.servers[ck.leaderId].Call("KVServer.PutAppend", &args, &reply)
 		if ret && reply.Err == OK {
 			return
 		}
 		ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
-		ClientPrintf("PutAppend Try again. Err=%v", reply.Err)
+		ClientPrintf("PutAppend Try again. ret = %v, Err=%v to C.%v", ret, reply.Err, ck.leaderId)
 	}
 }
 
@@ -120,6 +123,6 @@ func (ck *Clerk) Put(key string, value string) {
 	ck.PutAppend(key, value, "Put")
 }
 func (ck *Clerk) Append(key string, value string) {
-	ClientPrintf("Client send Append key=%v value=%v to C.%v", key, value, ck.leaderId)
+	ClientPrintf("Client send Append key=%v value=%v C.%v", key, value, ck.leaderId)
 	ck.PutAppend(key, value, "Append")
 }

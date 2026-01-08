@@ -2,7 +2,7 @@
 
 MAX_RUNS=10
 export VERBOSE=0
-TEST_CMD="go test -run 2D"
+TEST_CMD="go test -run 2A"
 
 for (( i=1; i<=$MAX_RUNS; i++ ))
 do

@@ -20,6 +20,7 @@ package raft
 import (
 	//	"bytes"
 	"bytes"
+	"log"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -211,6 +212,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	log.Printf("Create Snapshot Idx.%v.", index)
 
 	if index < rf.snapshot.LastIncludedIndex {
 		LOGPRINT(ERROR, dSnap, "index(%v) is out of range(%v), snapshot failed", index, rf.snapshot.LastIncludedIndex)
@@ -566,6 +568,8 @@ func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
 	//fmt.Print("current call kill\n")
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	close(rf.startCh)
 }
 
@@ -837,8 +841,8 @@ func (rf *Raft) SendAppendEntry() {
 							rf.NextIndex[server] = prevLogIndex + 1 + len(entries)
 							rf.MatchIndex[server] = rf.NextIndex[server] - 1
 						}
-						//LOGPRINT(DEBUG, dLog, "C.%v NextIndex = %v.\n", rf.me, rf.NextIndex)
-						//LOGPRINT(DEBUG, dLog, "C.%v MatchIndex = %v.\n", rf.me, rf.MatchIndex)
+						LOGPRINT(DEBUG, dLog, "C.%v NextIndex = %v.\n", rf.me, rf.NextIndex)
+						LOGPRINT(DEBUG, dLog, "C.%v MatchIndex = %v.\n", rf.me, rf.MatchIndex)
 						rf.updateCommitIndex()
 					} else {
 						if reply.LastLogIndex == -1 {

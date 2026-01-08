@@ -4,6 +4,7 @@ import (
 	"log"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"6.824/labgob"
 	"6.824/labrpc"
@@ -38,8 +39,10 @@ type Op struct {
 }
 
 type OpResult struct {
-	Err   Err
-	Value string
+	Err       Err
+	Value     string
+	ClientId  int64
+	RequestId int
 }
 
 type KVServer struct {
@@ -56,11 +59,17 @@ type KVServer struct {
 
 	lastAppliedCmd map[int64]int
 	resultChnl     map[int]chan OpResult
+	clientReqId    map[int64]int
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
-	command := Op{Type: "Get", Key: args.Key}
+	command := Op{
+		Type:      "Get",
+		Key:       args.Key,
+		ClientId:  args.ClientId,
+		RequestId: args.RequestId,
+	}
 	index, _, isLeader := kv.rf.Start(command)
 
 	if !isLeader {
@@ -69,6 +78,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	}
 
 	//wait for command apply
+	ServicePrintf("[C.%v][Index.%v]Waiting for Get commit.", kv.me, index)
 	kv.mu.Lock()
 	if _, ok := kv.resultChnl[index]; !ok {
 		kv.resultChnl[index] = make(chan OpResult)
@@ -76,11 +86,32 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	ResChnl := kv.resultChnl[index]
 	kv.mu.Unlock()
 
-	select {
-	case result := <-ResChnl:
-		reply.Err = result.Err
-		reply.Value = result.Value
+	for {
+		select {
+		case result := <-ResChnl:
+			if args.ClientId != result.ClientId || args.RequestId != result.RequestId {
+				ServicePrintf("[C.%v][Index.%v]Get Req %+v get wrong result %+v of other Client(%v:%v).", kv.me, index, command, result, result.ClientId, result.RequestId)
+				// do not return anything, let it timeout
+				// do not delete channel here, let the timeout case do it
+				continue
+			}
+			reply.Err = result.Err
+			reply.Value = result.Value
+			ServicePrintf("[C.%v][Index.%v]End return %v. %v", kv.me, index, result, command)
+			kv.mu.Lock()
+			delete(kv.resultChnl, index)
+			kv.mu.Unlock()
+			return
+		case <-time.After(300 * time.Millisecond):
+			ServicePrintf("[C.%v][Index.%v]Get Req %+v timeout.", kv.me, index, command)
+			reply.Err = ErrTimeout
+			kv.mu.Lock()
+			delete(kv.resultChnl, index)
+			kv.mu.Unlock()
+			return
+		}
 	}
+
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
@@ -94,11 +125,13 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	}
 
 	index, _, isLeader := kv.rf.Start(op)
+	ServicePrintf("[C.%v][Index.%v]PutAppend Req: %+v. Start return with %d, %v", kv.me, index, op, index, isLeader)
 	if !isLeader {
 		reply.Err = ErrWrongLeader
 		return
 	}
 
+	ServicePrintf("[C.%v][Index.%v]Waiting for op commit.", kv.me, index)
 	kv.mu.Lock()
 	if _, ok := kv.resultChnl[index]; !ok {
 		kv.resultChnl[index] = make(chan OpResult)
@@ -106,8 +139,31 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	ResChnl := kv.resultChnl[index]
 	kv.mu.Unlock()
 
-	result := <-ResChnl
-	reply.Err = result.Err
+	for {
+		select {
+		case result := <-ResChnl:
+			// 收到结果
+			if args.ClientId != result.ClientId || args.RequestId != result.RequestId {
+				ServicePrintf("[C.%v][Index.%v]PutAppend Req %+v get wrong result %+v of other Client(%v:%v).", kv.me, index, op, result, result.ClientId, result.RequestId)
+				// do not return anything, let it timeout
+				// do not delete channel here, let the timeout case do it
+				continue
+			}
+			ServicePrintf("[C.%v][Index.%v]End return %v. %v", kv.me, index, result, op)
+			kv.mu.Lock()
+			delete(kv.resultChnl, index)
+			kv.mu.Unlock()
+			reply.Err = result.Err
+			return
+		case <-time.After(300 * time.Millisecond):
+			ServicePrintf("[C.%v][Index.%v]PutAppend Req %+v timeout.", kv.me, index, op)
+			reply.Err = ErrTimeout
+			kv.mu.Lock()
+			delete(kv.resultChnl, index)
+			kv.mu.Unlock()
+			return
+		}
+	}
 }
 
 // the tester calls Kill() when a KVServer instance won't
@@ -159,6 +215,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.kvstore = make(map[string]string)
 	kv.lastAppliedCmd = make(map[int64]int)
 	kv.resultChnl = make(map[int]chan OpResult)
+	kv.clientReqId = make(map[int64]int)
 
 	go kv.DealAppliedCmd()
 
@@ -169,7 +226,7 @@ func (kv *KVServer) DealAppliedCmd() {
 	for msg := range kv.applyCh {
 		if msg.CommandValid {
 			cmd := msg.Command.(Op)
-			ServicePrintf("Applied Cmd [%v]", cmd)
+			ServicePrintf("[C.%v][Index.%v]Applied Cmd [%v]", kv.me, msg.CommandIndex, cmd)
 			kv.mu.Lock()
 			if !kv.isDuplicateRequest(cmd) {
 				switch cmd.Type {
@@ -180,8 +237,9 @@ func (kv *KVServer) DealAppliedCmd() {
 				}
 				kv.lastAppliedCmd[cmd.ClientId] = cmd.RequestId
 			}
+			ServicePrintf("[C.%v][Index.%v] Find result Channel.", kv.me, msg.CommandIndex)
 			if ch, ok := kv.resultChnl[msg.CommandIndex]; ok {
-				var result OpResult
+				var result = OpResult{ClientId: cmd.ClientId, RequestId: cmd.RequestId}
 				if cmd.Type == "Get" {
 					value, ok := kv.kvstore[cmd.Key]
 					if ok {
@@ -190,12 +248,12 @@ func (kv *KVServer) DealAppliedCmd() {
 					} else {
 						result.Err = ErrNoKey
 					}
-					ServicePrintf("Get Key=%v Value=%v", cmd.Key, result.Value)
+					ServicePrintf("[C.%v][Index.%v]Get Key=%v Value=%v", kv.me, msg.CommandIndex, cmd.Key, result.Value)
 				} else {
 					result.Err = OK
 				}
+				ServicePrintf("[C.%v][Index.%v]Send result(%v) of %v by C.%v", kv.me, msg.CommandIndex, result, cmd, kv.me)
 				ch <- result
-				close(ch)
 			}
 			kv.mu.Unlock()
 		}
@@ -204,5 +262,6 @@ func (kv *KVServer) DealAppliedCmd() {
 
 func (kv *KVServer) isDuplicateRequest(op Op) bool {
 	lastReqId, ok := kv.lastAppliedCmd[op.ClientId]
+	ServicePrintf("[C.%v]Op %v /LastReqId %v.", kv.me, op, lastReqId)
 	return ok && op.RequestId <= lastReqId
 }
