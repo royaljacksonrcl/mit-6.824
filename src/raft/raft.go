@@ -102,6 +102,7 @@ type Raft struct {
 	log         []LogEntry
 
 	//SnapShot
+	snapshoting  bool
 	snapshot     Snapshot
 	snapshotdata []byte
 	needsend     []bool
@@ -195,6 +196,10 @@ func (rf *Raft) readPersist(data []byte) {
 	}
 }
 
+func (rf *Raft) GetPSRaftSize() int {
+	return rf.persister.RaftStateSize()
+}
+
 // A service wants to switch to snapshot.  Only do so if Raft hasn't
 // have more recent info since it communicate the snapshot on applyCh.
 func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int, snapshot []byte) bool {
@@ -210,6 +215,7 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
+
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	log.Printf("Create Snapshot Idx.%v.", index)
@@ -911,7 +917,7 @@ func (rf *Raft) ApplyLogs() {
 		rf.mu.Unlock()
 		rf.applyCh <- msg
 		rf.mu.Lock()
-		LOGPRINT(DEBUG, dLog, "C.%v ApplyLogs Index.%v End", rf.me, rf.LastApplied)
+		LOGPRINT(DEBUG, dLog, "C.%v ApplyLogs Index.%v End, need to apply to Index.%v", rf.me, rf.LastApplied, rf.CommitIndex)
 	}
 	rf.runningApply = false
 }

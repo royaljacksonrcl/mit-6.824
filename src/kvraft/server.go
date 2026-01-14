@@ -1,6 +1,7 @@
 package kvraft
 
 import (
+	"bytes"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -55,7 +56,8 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	kvstore map[string]string
+	kvstore                  map[string]string
+	lastAppliedSnapshotIndex int // for snapshot
 
 	lastAppliedCmd map[int64]int
 	resultChnl     map[int]chan OpResult
@@ -150,10 +152,10 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 				continue
 			}
 			ServicePrintf("[C.%v][Index.%v]End return %v. %v", kv.me, index, result, op)
+			reply.Err = result.Err
 			kv.mu.Lock()
 			delete(kv.resultChnl, index)
 			kv.mu.Unlock()
-			reply.Err = result.Err
 			return
 		case <-time.After(300 * time.Millisecond):
 			ServicePrintf("[C.%v][Index.%v]PutAppend Req %+v timeout.", kv.me, index, op)
@@ -224,7 +226,32 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 func (kv *KVServer) DealAppliedCmd() {
 	for msg := range kv.applyCh {
-		if msg.CommandValid {
+		if msg.SnapshotValid {
+			kv.mu.Lock()
+			ServicePrintf("[C.%v]Receive Snapshot from Raft at Index %v, Current Snapshot Index %v", kv.me, msg.SnapshotIndex, kv.lastAppliedSnapshotIndex)
+			//检查快照的有效性并加载快照内容，当重复加载的快照索引小于等于当前快照索引时，说明该快照是旧快照，直接忽略
+			if msg.SnapshotIndex <= kv.lastAppliedSnapshotIndex {
+				kv.mu.Unlock()
+				continue
+			}
+			//需要注意产生的 Snapshot 可能是其他 Follower 的，当自己被选举为 Leader 后，不再接收旧的 Snapshot
+
+			//decode snapshot
+			r := bytes.NewBuffer(msg.Snapshot)
+			d := labgob.NewDecoder(r)
+			var kvstore map[string]string
+			var lastAppliedCmd map[int64]int
+			if d.Decode(&kvstore) != nil || d.Decode(&lastAppliedCmd) != nil {
+				log.Fatalf("C.%v Failed to decode snapshot data", kv.me)
+			} else {
+				kv.kvstore = kvstore
+				kv.lastAppliedCmd = lastAppliedCmd
+				kv.lastAppliedSnapshotIndex = msg.SnapshotIndex
+				ServicePrintf("[C.%v]Load Snapshot from Raft at Index %v Success. KVStore:%v LastAppliedCmd:%v", kv.me, msg.SnapshotIndex, kv.kvstore, kv.lastAppliedCmd)
+			}
+			kv.mu.Unlock()
+			continue
+		} else if msg.CommandValid {
 			cmd := msg.Command.(Op)
 			ServicePrintf("[C.%v][Index.%v]Applied Cmd [%v]", kv.me, msg.CommandIndex, cmd)
 			kv.mu.Lock()
@@ -236,6 +263,25 @@ func (kv *KVServer) DealAppliedCmd() {
 					kv.kvstore[cmd.Key] += cmd.Value
 				}
 				kv.lastAppliedCmd[cmd.ClientId] = cmd.RequestId
+				// 非重复消息：判断日志的长度并对数据库进行快照，并通知 Raft 进行日志截断
+				ServicePrintf("[C.%v]Check maxraftsate %v", kv.me, kv.maxraftstate)
+				if kv.maxraftstate != -1 && kv.rf.GetPSRaftSize() > kv.maxraftstate {
+					ServicePrintf("[C.%v]Start Snapshot at Index %v", kv.me, msg.CommandIndex)
+					w := new(bytes.Buffer)
+					e := labgob.NewEncoder(w)
+					e.Encode(kv.kvstore)
+					e.Encode(kv.lastAppliedCmd)
+					data := w.Bytes()
+					kv.rf.Snapshot(msg.CommandIndex, data)
+				}
+				ServicePrintf("[C.%v][Index.%v]Notify result Channel.", kv.me, msg.CommandIndex)
+			}
+			// 重复消息不能跳过，可能执行上次一次的结果没有通知到客户端，需要再次通知客户端
+			// 检查当前是否 Leader 状态，处于 Leader 状态才发送结果
+			_, isLeader := kv.rf.GetState()
+			if !isLeader {
+				kv.mu.Unlock()
+				continue
 			}
 			ServicePrintf("[C.%v][Index.%v] Find result Channel.", kv.me, msg.CommandIndex)
 			if ch, ok := kv.resultChnl[msg.CommandIndex]; ok {
@@ -253,7 +299,11 @@ func (kv *KVServer) DealAppliedCmd() {
 					result.Err = OK
 				}
 				ServicePrintf("[C.%v][Index.%v]Send result(%v) of %v by C.%v", kv.me, msg.CommandIndex, result, cmd, kv.me)
-				ch <- result
+				select {
+				case ch <- result:
+				default:
+					ServicePrintf("[C.%v][Index.%v]Result Channel full, skip sending result %v of %v", kv.me, msg.CommandIndex, result, cmd)
+				}
 			}
 			kv.mu.Unlock()
 		}

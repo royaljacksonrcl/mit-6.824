@@ -18,7 +18,7 @@ for i in $(seq 1 $MAX); do
   echo "===== Run $i / $MAX ====="
   start_time=$(date +%s.%N)
 
-  if go test -run "${TEST}" -race -v > "$LOG" 2>&1; then
+  if VERBOSE=3 go test -run "${TEST}" -race -v > "$LOG" 2>&1; then
     end_time=$(date +%s.%N)
     duration=$(echo "$end_time - $start_time" | bc -l 2>/dev/null || echo "0")
 

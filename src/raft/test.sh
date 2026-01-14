@@ -1,8 +1,8 @@
 #!/bin/bash
 
-MAX_RUNS=10
+MAX_RUNS=100
 export VERBOSE=0
-TEST_CMD="go test -run 2A"
+TEST_CMD="VERBOSE=3 go test -run 2D -race"
 
 for (( i=1; i<=$MAX_RUNS; i++ ))
 do

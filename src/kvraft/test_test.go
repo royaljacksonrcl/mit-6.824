@@ -293,7 +293,7 @@ func GenericTest(t *testing.T, part string, nclients int, nservers int, unreliab
 					//log.Printf("%d: client new get %v\n", cli, key)
 					v := Get(cfg, myck, key, opLog, cli)
 					// the following check only makes sense when we're not using random keys
-					//log.Printf("%d: client get %v -> %v\n", cli, key, v)
+					log.Printf("%d: client get %v -> %v\n", cli, key, v)
 					if !randomkeys && v != last {
 						t.Fatalf("get wrong value, key %v, wanted:\n%v\n, got\n%v\n", key, last, v)
 					}

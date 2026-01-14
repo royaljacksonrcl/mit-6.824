@@ -113,8 +113,9 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		if ret && reply.Err == OK {
 			return
 		}
-		ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
 		ClientPrintf("PutAppend Try again. ret = %v, Err=%v to C.%v", ret, reply.Err, ck.leaderId)
+		ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
+		ClientPrintf("Send New Request to C.%v", ck.leaderId)
 	}
 }
 
