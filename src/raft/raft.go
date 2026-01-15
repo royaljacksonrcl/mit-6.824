@@ -114,8 +114,8 @@ type Raft struct {
 	runningApply bool
 
 	//Volatile state on all servers
-	CommitIndex int
-	LastApplied int
+	CommitIndex int // 已经确认提交过的 Log 索引
+	LastApplied int // 执行过的 Log 索引
 
 	//Volatile state on leader
 	NextIndex  []int
@@ -247,6 +247,7 @@ type RequestVoteReply struct {
 	// Your data here (2A).
 	VoteTerm    Term
 	VoteGranted bool
+	VoteID      RoleID
 }
 
 // example RequestVote RPC handler.
@@ -263,6 +264,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.persist()
 	}
 
+	reply.VoteID = RoleID(rf.me)
 	reply.VoteTerm = rf.currentTerm
 	if args.CandidateTerm < rf.currentTerm {
 		reply.VoteGranted = false
@@ -434,7 +436,7 @@ type InstallSnapshotReply struct {
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	LOGPRINT(DEBUG, dSnap, "C.%v InstallSnapshot step 1", rf.me)
+	LOGPRINT(DEBUG, dSnap, "C.%v InstallSnapshot Index.%v", rf.me, args.State.LastIncludedIndex)
 	if args.CurrentTerm < rf.currentTerm {
 		reply.CurrentTerm = rf.currentTerm
 		LOGPRINT(DEBUG, dSnap, "C.%v InstallSnapshot Failed.", rf.me)
@@ -447,20 +449,27 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	rf.persist()
 
 	if rf.snapshot.Persisted && args.State.LastIncludedIndex <= rf.snapshot.LastIncludedIndex {
+		LOGPRINT(DEBUG, dSnap, "C.%v InstallSnapshot Ignored. Cause snapshot Index(%v) <= self snapshot Index(%v)", rf.me, args.State.LastIncludedIndex, rf.snapshot.LastIncludedIndex)
 		return
 	}
+	//if rf.CommitIndex > args.State.LastIncludedIndex {
+	// 拒绝旧的快照
+	//LOGPRINT(DEBUG, dSnap, "C.%v InstallSnapshot Ignored. Cause CommitIndex(%v) > snapshot Index(%v)", rf.me, rf.CommitIndex, args.State.LastIncludedIndex)
+	//return
+	//}
 
-	LOGPRINT(DEBUG, dSnap, "C.%v InstallSnapshot step 2", rf.me)
+	LOGPRINT(DEBUG, dSnap, "C.%v InstallSnapshot Before:snapshot.Index:%v snapshot.Data:%v LastApplied:%v log:%v ", rf.me, rf.snapshot.LastIncludedIndex, len(rf.snapshotdata), rf.LastApplied, rf.log)
 	rf.log = truncateLog(rf.log, args.State.LastIncludedIndex-rf.snapshot.LastIncludedIndex, args.State.LastIncludedTerm)
 	rf.snapshot = args.State
 	rf.snapshotdata = args.Data
 	rf.snapshot.Persisted = false
-	rf.snapshot.Applied = false
 	if rf.CommitIndex < rf.snapshot.LastIncludedIndex {
 		rf.CommitIndex = rf.snapshot.LastIncludedIndex
+		rf.snapshot.Applied = false
 	}
 	if rf.LastApplied < rf.snapshot.LastIncludedIndex {
 		rf.LastApplied = rf.snapshot.LastIncludedIndex
+		rf.snapshot.Applied = false
 	}
 	LOGPRINT(DEBUG, dSnap, "C.%v InstallSnapshot End:snapshot.Index:%v snapshot.Data:%v LastApplied:%v log:%v ", rf.me, rf.snapshot.LastIncludedIndex, len(rf.snapshotdata), rf.LastApplied, rf.log)
 
@@ -683,7 +692,7 @@ func (rf *Raft) runAsCandidate() {
 			return
 		case reply := <-rf.voteResultCh:
 			rf.mu.Lock()
-			LOGPRINT(DEBUG, dVote, "C.%v(CurrentTerm=%v) receive Term-%v VoteGranted = %v [%v/%v]\n", rf.me, rf.currentTerm, reply.VoteTerm, reply.VoteGranted, rf.votes, len(rf.peers))
+			LOGPRINT(DEBUG, dVote, "C.%v(CurrentTerm=%v) receive Term-%v VoteGranted = %v From C.%v [%v/%v]\n", rf.me, rf.currentTerm, reply.VoteTerm, reply.VoteGranted, reply.VoteID, rf.votes, len(rf.peers))
 			if reply.VoteGranted && reply.VoteTerm == rf.currentTerm {
 				rf.votes++
 				if rf.votes > len(rf.peers)/2 {
@@ -774,6 +783,7 @@ func (rf *Raft) SendSnapshot(server int) {
 
 	rf.mu.Unlock()
 	var reply InstallSnapshotReply
+	LOGPRINT(INFO, dSnap, "C.%v send INSTALLSNAPSHOT to C.%v, SnapshotIndex = %v.\n", rf.me, server, args.State.LastIncludedIndex)
 	if rf.sendInstallSnapshot(server, &args, &reply) {
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
@@ -869,12 +879,13 @@ func (rf *Raft) SendAppendEntry() {
 	}
 }
 func (rf *Raft) updateCommitIndex() {
-	LOGPRINT(DEBUG, dLog, "C.%v updateCommitIndex From %v", rf.me, rf.CommitIndex)
+	LOGPRINT(DEBUG, dLog, "C.%v updateCommitIndex From %v, SnapShot End from %v.", rf.me, rf.CommitIndex, rf.snapshot.LastIncludedIndex)
+	LOGPRINT(DEBUG, dLog, "C.%v Current Log: %v", rf.me, rf.log)
 	UpdateIndex := rf.CommitIndex
 	for i := rf.CommitIndex + 1 - rf.snapshot.LastIncludedIndex; i < len(rf.log); i++ {
 		count := 1
 		for j := range rf.peers {
-			if j != rf.me && rf.MatchIndex[j] >= i {
+			if j != rf.me && rf.MatchIndex[j] >= (i+rf.snapshot.LastIncludedIndex) {
 				count++
 			}
 		}
@@ -1003,7 +1014,7 @@ func (rf *Raft) CreateSnapshot(snapshotData []byte, lastIncludedIndex int) {
 		LastIncludedIndex: lastIncludedIndex,
 		LastIncludedTerm:  rf.log[lastIncludedIndex-lastsnapshot.LastIncludedIndex].Term,
 		Persisted:         false,
-		Applied:           false,
+		Applied:           true,
 	}
 	rf.snapshotdata = snapshotData
 

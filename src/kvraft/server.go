@@ -56,10 +56,10 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	kvstore                  map[string]string
-	lastAppliedSnapshotIndex int // for snapshot
+	kvstore map[string]string
 
 	lastAppliedCmd map[int64]int
+	lastCmdIdx     int //更
 	resultChnl     map[int]chan OpResult
 	clientReqId    map[int64]int
 }
@@ -228,14 +228,7 @@ func (kv *KVServer) DealAppliedCmd() {
 	for msg := range kv.applyCh {
 		if msg.SnapshotValid {
 			kv.mu.Lock()
-			ServicePrintf("[C.%v]Receive Snapshot from Raft at Index %v, Current Snapshot Index %v", kv.me, msg.SnapshotIndex, kv.lastAppliedSnapshotIndex)
-			//检查快照的有效性并加载快照内容，当重复加载的快照索引小于等于当前快照索引时，说明该快照是旧快照，直接忽略
-			if msg.SnapshotIndex <= kv.lastAppliedSnapshotIndex {
-				kv.mu.Unlock()
-				continue
-			}
-			//需要注意产生的 Snapshot 可能是其他 Follower 的，当自己被选举为 Leader 后，不再接收旧的 Snapshot
-
+			ServicePrintf("[C.%v]Receive Snapshot from Raft at Index %v, Current Snapshot Index %v", kv.me, msg.SnapshotIndex)
 			//decode snapshot
 			r := bytes.NewBuffer(msg.Snapshot)
 			d := labgob.NewDecoder(r)
@@ -246,7 +239,6 @@ func (kv *KVServer) DealAppliedCmd() {
 			} else {
 				kv.kvstore = kvstore
 				kv.lastAppliedCmd = lastAppliedCmd
-				kv.lastAppliedSnapshotIndex = msg.SnapshotIndex
 				ServicePrintf("[C.%v]Load Snapshot from Raft at Index %v Success. KVStore:%v LastAppliedCmd:%v", kv.me, msg.SnapshotIndex, kv.kvstore, kv.lastAppliedCmd)
 			}
 			kv.mu.Unlock()
