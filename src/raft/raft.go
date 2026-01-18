@@ -20,7 +20,6 @@ package raft
 import (
 	//	"bytes"
 	"bytes"
-	"log"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -105,7 +104,6 @@ type Raft struct {
 	snapshoting  bool
 	snapshot     Snapshot
 	snapshotdata []byte
-	needsend     []bool
 
 	heartbeatCh  chan bool
 	startCh      chan bool
@@ -218,7 +216,6 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	log.Printf("Create Snapshot Idx.%v.", index)
 
 	if index < rf.snapshot.LastIncludedIndex {
 		LOGPRINT(ERROR, dSnap, "index(%v) is out of range(%v), snapshot failed", index, rf.snapshot.LastIncludedIndex)
@@ -781,9 +778,13 @@ func (rf *Raft) SendSnapshot(server int) {
 		if rf.NextIndex[server] < args.State.LastIncludedIndex {
 			rf.NextIndex[server] = args.State.LastIncludedIndex + 1
 		}
-		rf.needsend[server] = false
 	}
 
+}
+
+// 判断是否要发送快照，判断逻辑是当前的日志是否能够满足下一次发送的索引位置，如果不能满足，则需要发送快照
+func (rf *Raft) needSendSnapshot(server int) bool {
+	return rf.NextIndex[server] <= rf.snapshot.LastIncludedIndex
 }
 
 func (rf *Raft) SendAppendEntry() {
@@ -796,7 +797,7 @@ func (rf *Raft) SendAppendEntry() {
 					return
 				}
 
-				if rf.needsend[server] {
+				if rf.needSendSnapshot(server) {
 					rf.mu.Unlock()
 					go rf.SendSnapshot(server)
 					return
@@ -857,9 +858,6 @@ func (rf *Raft) SendAppendEntry() {
 						} else {
 							rf.NextIndex[server] = reply.LastLogIndex + 1
 							LOGPRINT(DEBUG, dLog, "C.%v 222222222 reply = %v rf.snapshot.LastIncludedIndex = %v", rf.me, reply.LastLogIndex, rf.snapshot.LastIncludedIndex)
-						}
-						if rf.NextIndex[server] <= rf.snapshot.LastIncludedIndex {
-							rf.needsend[server] = true
 						}
 					}
 
@@ -980,7 +978,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.runningApply = false
 
 	rf.snapshot = Snapshot{LastIncludedIndex: 0, LastIncludedTerm: 0, Persisted: true, Applied: true}
-	rf.needsend = make([]bool, len(peers))
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())

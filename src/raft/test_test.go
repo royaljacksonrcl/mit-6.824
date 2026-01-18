@@ -524,12 +524,12 @@ func TestBackup2B(t *testing.T) {
 
 	// lots of successful commands to new group.
 	for i := 0; i < 50; i++ {
-		fmt.Printf("cfg.one %v\n", i)
+		//fmt.Printf("cfg.one %v\n", i)
 		cfg.one(rand.Int(), 3, true)
 	}
 
 	// now another partitioned leader and one follower
-	fmt.Printf("cfg.checkOneLeader\n")
+	//fmt.Printf("cfg.checkOneLeader\n")
 	leader2 := cfg.checkOneLeader()
 	other := (leader1 + 2) % servers
 	if leader2 == other {
