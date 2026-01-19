@@ -436,7 +436,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	LOGPRINT(INFO, dLog2, "C.%v %v CommitIndex=%v LastApplied=%v\n", rf.me, rf.log, rf.CommitIndex, rf.LastApplied)
 
-	if rf.LastApplied == originCommitIndex && rf.CommitIndex > originCommitIndex {
+	if rf.CommitIndex > originCommitIndex {
 		rf.applyCond.Signal()
 	}
 
