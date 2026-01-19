@@ -20,7 +20,6 @@ package raft
 import (
 	//	"bytes"
 	"bytes"
-	"log"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -105,7 +104,6 @@ type Raft struct {
 	snapshoting  bool
 	snapshot     Snapshot
 	snapshotdata []byte
-	needsend     []bool
 
 	heartbeatCh  chan bool
 	startCh      chan bool
@@ -218,7 +216,6 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	log.Printf("Create Snapshot Idx.%v.", index)
 
 	if index < rf.snapshot.LastIncludedIndex {
 		LOGPRINT(ERROR, dSnap, "index(%v) is out of range(%v), snapshot failed", index, rf.snapshot.LastIncludedIndex)
@@ -791,9 +788,13 @@ func (rf *Raft) SendSnapshot(server int) {
 		if rf.NextIndex[server] < args.State.LastIncludedIndex {
 			rf.NextIndex[server] = args.State.LastIncludedIndex + 1
 		}
-		rf.needsend[server] = false
 	}
 
+}
+
+// 判断是否要发送快照，判断逻辑是当前的日志是否能够满足下一次发送的索引位置，如果不能满足，则需要发送快照
+func (rf *Raft) needSendSnapshot(server int) bool {
+	return rf.NextIndex[server] <= rf.snapshot.LastIncludedIndex
 }
 
 func (rf *Raft) SendAppendEntry() {
@@ -806,7 +807,7 @@ func (rf *Raft) SendAppendEntry() {
 					return
 				}
 
-				if rf.needsend[server] {
+				if rf.needSendSnapshot(server) {
 					rf.mu.Unlock()
 					go rf.SendSnapshot(server)
 					return
@@ -863,13 +864,10 @@ func (rf *Raft) SendAppendEntry() {
 					} else {
 						if reply.LastLogIndex == -1 {
 							rf.NextIndex[server] = prevLogIndex
-							LOGPRINT(DEBUG, dLog, "C.%v 111111111", rf.me)
+							LOGPRINT(DEBUG, dLog, "C.%v update Server %v NextIndex -1 --> %v", rf.me, server, rf.NextIndex[server])
 						} else {
 							rf.NextIndex[server] = reply.LastLogIndex + 1
-							LOGPRINT(DEBUG, dLog, "C.%v 222222222 reply = %v rf.snapshot.LastIncludedIndex = %v", rf.me, reply.LastLogIndex, rf.snapshot.LastIncludedIndex)
-						}
-						if rf.NextIndex[server] <= rf.snapshot.LastIncludedIndex {
-							rf.needsend[server] = true
+							LOGPRINT(DEBUG, dLog, "C.%v update Server %v NextIndex = %v", rf.me, server, rf.NextIndex[server])
 						}
 					}
 
@@ -880,7 +878,7 @@ func (rf *Raft) SendAppendEntry() {
 }
 func (rf *Raft) updateCommitIndex() {
 	LOGPRINT(DEBUG, dLog, "C.%v updateCommitIndex From %v, SnapShot End from %v.", rf.me, rf.CommitIndex, rf.snapshot.LastIncludedIndex)
-	LOGPRINT(DEBUG, dLog, "C.%v Current Log: %v", rf.me, rf.log)
+	//LOGPRINT(DEBUG, dLog, "C.%v Current Log: %v", rf.me, rf.log)
 	UpdateIndex := rf.CommitIndex
 	for i := rf.CommitIndex + 1 - rf.snapshot.LastIncludedIndex; i < len(rf.log); i++ {
 		count := 1
@@ -991,7 +989,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.runningApply = false
 
 	rf.snapshot = Snapshot{LastIncludedIndex: 0, LastIncludedTerm: 0, Persisted: true, Applied: true}
-	rf.needsend = make([]bool, len(peers))
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
@@ -1018,9 +1015,9 @@ func (rf *Raft) CreateSnapshot(snapshotData []byte, lastIncludedIndex int) {
 	}
 	rf.snapshotdata = snapshotData
 
-	LOGPRINT(DEBUG, dSnap, "C.%v CreateSnapshot Origin log eq %v.\n", rf.me, rf.log)
+	//LOGPRINT(DEBUG, dSnap, "C.%v CreateSnapshot Origin log eq %v.\n", rf.me, rf.log)
 	rf.log = truncateLog(rf.log, lastIncludedIndex-lastsnapshot.LastIncludedIndex, rf.snapshot.LastIncludedTerm)
-	LOGPRINT(DEBUG, dSnap, "C.%v CreateSnapshot Current log eq %v.\n", rf.me, rf.log)
+	//LOGPRINT(DEBUG, dSnap, "C.%v CreateSnapshot Current log eq %v.\n", rf.me, rf.log)
 
 	rf.persist()
 	LOGPRINT(DEBUG, dSnap, "C.%v CreateSnapshot End.\n", rf.me)
