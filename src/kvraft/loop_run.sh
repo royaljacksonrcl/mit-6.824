@@ -2,8 +2,15 @@
 
 set -o pipefail
 
-TEST="$1"
-MAX=1000
+MAX=10
+CMD="go test -race"
+
+if [ -n "$1" ]; then
+    CMD="$CMD -run $1"
+    TEST="$1"
+else
+    TEST="all tests"
+fi
 
 # 统计初始化
 declare -a times
@@ -18,7 +25,7 @@ for i in $(seq 1 $MAX); do
   echo "===== Run $i / $MAX ====="
   start_time=$(date +%s.%N)
 
-  if go test -run "${TEST}" -race -v > "$LOG" 2>&1; then
+  if $CMD > "$LOG" 2>&1; then
     end_time=$(date +%s.%N)
     duration=$(echo "$end_time - $start_time" | bc -l 2>/dev/null || echo "0")
 

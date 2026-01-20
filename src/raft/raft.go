@@ -399,6 +399,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = false
 		if !rf.snapshot.Persisted {
 			reply.LastLogIndex = -1
+		} else if !ret {
+			//由于 Snapshot 和 AppendEntries 不能匹配，入法计算出收到的 log 所属的真实 log 位置，
+			//将本地最近一次的 Applied 的 log index 回复给 Leader
+			reply.LastLogIndex = rf.LastApplied
 		} else if refargs.PrevLogIndex >= len(rf.log) {
 			reply.LastLogIndex = len(rf.log) - 1 + rf.snapshot.LastIncludedIndex
 		} else if refargs.PrevLogTerm != rf.log[refargs.PrevLogIndex].Term {
@@ -475,6 +479,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 
 	if rf.snapshot.Persisted && args.State.LastIncludedIndex <= rf.snapshot.LastIncludedIndex {
 		LOGPRINT(DEBUG, dSnap, "C.%v InstallSnapshot Ignored. Cause snapshot Index(%v) <= self snapshot Index(%v)", rf.me, args.State.LastIncludedIndex, rf.snapshot.LastIncludedIndex)
+		reply.CurrentTerm = rf.currentTerm
 		return
 	}
 	//if rf.CommitIndex > args.State.LastIncludedIndex {
@@ -1032,6 +1037,17 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 	rf.snapshotdata = persister.ReadSnapshot()
+
+	if rf.snapshot.LastIncludedIndex > 0 {
+		go func() {
+			rf.applyCh <- ApplyMsg{
+				SnapshotValid: true,
+				Snapshot:      rf.snapshotdata,
+				SnapshotIndex: rf.snapshot.LastIncludedIndex,
+				SnapshotTerm:  int(rf.snapshot.LastIncludedTerm),
+			}
+		}()
+	}
 
 	// start ticker goroutine to start elections
 	go rf.ticker()

@@ -88,7 +88,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	ResChnl := kv.resultChnl[index]
 	kv.mu.Unlock()
 
-	for {
+	for !kv.killed() {
 		select {
 		case result := <-ResChnl:
 			if args.ClientId != result.ClientId || args.RequestId != result.RequestId {
@@ -228,18 +228,21 @@ func (kv *KVServer) DealAppliedCmd() {
 	for msg := range kv.applyCh {
 		if msg.SnapshotValid {
 			kv.mu.Lock()
-			ServicePrintf("[C.%v]Receive Snapshot from Raft at Index %v, Current Snapshot Index %v", kv.me, msg.SnapshotIndex)
-			//decode snapshot
-			r := bytes.NewBuffer(msg.Snapshot)
-			d := labgob.NewDecoder(r)
-			var kvstore map[string]string
-			var lastAppliedCmd map[int64]int
-			if d.Decode(&kvstore) != nil || d.Decode(&lastAppliedCmd) != nil {
-				log.Fatalf("C.%v Failed to decode snapshot data", kv.me)
-			} else {
-				kv.kvstore = kvstore
-				kv.lastAppliedCmd = lastAppliedCmd
-				ServicePrintf("[C.%v]Load Snapshot from Raft at Index %v Success. KVStore:%v LastAppliedCmd:%v", kv.me, msg.SnapshotIndex, kv.kvstore, kv.lastAppliedCmd)
+			if kv.rf.CondInstallSnapshot(msg.SnapshotTerm, msg.SnapshotIndex, msg.Snapshot) {
+				ServicePrintf("[C.%v]Receive Snapshot from Raft at Index %v, Current Snapshot Index %v", kv.me, msg.SnapshotIndex, kv.lastCmdIdx)
+				//decode snapshot
+				r := bytes.NewBuffer(msg.Snapshot)
+				d := labgob.NewDecoder(r)
+				var kvstore map[string]string
+				var lastAppliedCmd map[int64]int
+				if d.Decode(&kvstore) != nil || d.Decode(&lastAppliedCmd) != nil {
+					log.Fatalf("C.%v Failed to decode snapshot data", kv.me)
+				} else {
+					kv.kvstore = kvstore
+					kv.lastAppliedCmd = lastAppliedCmd
+					ServicePrintf("[C.%v]Load Snapshot from Raft at Index %v Success.", kv.me, msg.SnapshotIndex)
+				}
+				ServicePrintf("[C.%v]Current RaftStateSize is %v.", kv.me, kv.rf.GetPSRaftSize())
 			}
 			kv.mu.Unlock()
 			continue
@@ -256,17 +259,18 @@ func (kv *KVServer) DealAppliedCmd() {
 				}
 				kv.lastAppliedCmd[cmd.ClientId] = cmd.RequestId
 				// 非重复消息：判断日志的长度并对数据库进行快照，并通知 Raft 进行日志截断
-				ServicePrintf("[C.%v]Check maxraftsate %v", kv.me, kv.maxraftstate)
+				//ServicePrintf("[C.%v]Check maxraftsate %v", kv.me, kv.maxraftstate)
 				if kv.maxraftstate != -1 && kv.rf.GetPSRaftSize() > kv.maxraftstate {
-					ServicePrintf("[C.%v]Start Snapshot at Index %v", kv.me, msg.CommandIndex)
+					ServicePrintf("[C.%v]Start Snapshot at Index %v RaftSize = %v", kv.me, msg.CommandIndex, kv.rf.GetPSRaftSize())
 					w := new(bytes.Buffer)
 					e := labgob.NewEncoder(w)
 					e.Encode(kv.kvstore)
 					e.Encode(kv.lastAppliedCmd)
 					data := w.Bytes()
+					ServicePrintf("[C.%v]Data Size = %v.", kv.me, len(data))
 					kv.rf.Snapshot(msg.CommandIndex, data)
 				}
-				ServicePrintf("[C.%v][Index.%v]Notify result Channel.", kv.me, msg.CommandIndex)
+				//ServicePrintf("[C.%v][Index.%v]Notify result Channel.", kv.me, msg.CommandIndex)
 			}
 			// 重复消息不能跳过，可能执行上次一次的结果没有通知到客户端，需要再次通知客户端
 			// 检查当前是否 Leader 状态，处于 Leader 状态才发送结果
@@ -284,6 +288,7 @@ func (kv *KVServer) DealAppliedCmd() {
 						result.Value = value
 						result.Err = OK
 					} else {
+						ServicePrintf("[C.%v] kvstore = %v.", kv.me, kv.kvstore)
 						result.Err = ErrNoKey
 					}
 					ServicePrintf("[C.%v][Index.%v]Get Key=%v Value=%v", kv.me, msg.CommandIndex, cmd.Key, result.Value)
