@@ -79,7 +79,6 @@ func (ck *Clerk) Get(key string) string {
 			tryagain = len(ck.servers)
 		}
 		tryagain--
-		ClientPrintf("Try %v times but not get value. C.%v, Err = %v", tryagain, ck.leaderId, reply.Err)
 	}
 	//return ""
 }
@@ -115,15 +114,12 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		}
 		ClientPrintf("PutAppend Try again. ret = %v, Err=%v to C.%v", ret, reply.Err, ck.leaderId)
 		ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
-		ClientPrintf("Send New Request to C.%v", ck.leaderId)
 	}
 }
 
 func (ck *Clerk) Put(key string, value string) {
-	ClientPrintf("Client send Put key=%v value=%v to C.%v", key, value, ck.leaderId)
 	ck.PutAppend(key, value, "Put")
 }
 func (ck *Clerk) Append(key string, value string) {
-	ClientPrintf("Client send Append key=%v value=%v C.%v", key, value, ck.leaderId)
 	ck.PutAppend(key, value, "Append")
 }

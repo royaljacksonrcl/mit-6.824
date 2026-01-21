@@ -23,6 +23,10 @@ type Op struct {
 	// Your data here.
 }
 
+func (sc *ShardCtrler) Initialize() {
+	
+}
+
 
 func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 	// Your code here.
@@ -75,6 +79,9 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 	sc.rf = raft.Make(servers, me, persister, sc.applyCh)
 
 	// Your code here.
+	sc.Initialize()
+
+	go sc.DealMsgApplier()
 
 	return sc
 }

@@ -2,6 +2,7 @@ package kvraft
 
 import (
 	"bytes"
+	"context"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -81,38 +82,14 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 
 	//wait for command apply
 	ServicePrintf("[C.%v][Index.%v]Waiting for Get commit.", kv.me, index)
-	kv.mu.Lock()
-	if _, ok := kv.resultChnl[index]; !ok {
-		kv.resultChnl[index] = make(chan OpResult)
+	result := kv.CmdWaiting(index, args.ClientId, args.RequestId, 300*time.Millisecond)
+	if result.Err == OK {
+		reply.Value = result.Value
+		ServicePrintf("[C.%v][Index.%v]Get return %v", kv.me, index, reply)
 	}
-	ResChnl := kv.resultChnl[index]
-	kv.mu.Unlock()
-
-	for !kv.killed() {
-		select {
-		case result := <-ResChnl:
-			if args.ClientId != result.ClientId || args.RequestId != result.RequestId {
-				ServicePrintf("[C.%v][Index.%v]Get Req %+v get wrong result %+v of other Client(%v:%v).", kv.me, index, command, result, result.ClientId, result.RequestId)
-				// do not return anything, let it timeout
-				// do not delete channel here, let the timeout case do it
-				continue
-			}
-			reply.Err = result.Err
-			reply.Value = result.Value
-			ServicePrintf("[C.%v][Index.%v]End return %v. %v", kv.me, index, result, command)
-			kv.mu.Lock()
-			delete(kv.resultChnl, index)
-			kv.mu.Unlock()
-			return
-		case <-time.After(300 * time.Millisecond):
-			ServicePrintf("[C.%v][Index.%v]Get Req %+v timeout.", kv.me, index, command)
-			reply.Err = ErrTimeout
-			kv.mu.Lock()
-			delete(kv.resultChnl, index)
-			kv.mu.Unlock()
-			return
-		}
-	}
+	reply.Err = result.Err
+	ServicePrintf("[C.%v][Index.%v]Get commit End.", kv.me, index)
+	return
 
 }
 
@@ -133,37 +110,51 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		return
 	}
 
-	ServicePrintf("[C.%v][Index.%v]Waiting for op commit.", kv.me, index)
+	ServicePrintf("[C.%v][Index.%v]Waiting for PutAppend commit.", kv.me, index)
+	result := kv.CmdWaiting(index, args.ClientId, args.RequestId, 300*time.Millisecond)
+	if result.Err != OK {
+		ServicePrintf("[C.%v][Index.%v]PutAppend return %v", kv.me, index, reply)
+	}
+	reply.Err = result.Err
+	ServicePrintf("[C.%v][Index.%v]PutAppend commit End.", kv.me, index)
+	return
+}
+
+func (kv *KVServer) CmdWaiting(index int, clientId int64, requestId int, timeout time.Duration) OpResult {
 	kv.mu.Lock()
 	if _, ok := kv.resultChnl[index]; !ok {
-		kv.resultChnl[index] = make(chan OpResult)
+		kv.resultChnl[index] = make(chan OpResult, 1)
 	}
-	ResChnl := kv.resultChnl[index]
+	resultChnl := kv.resultChnl[index]
 	kv.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 
 	for {
 		select {
-		case result := <-ResChnl:
-			// 收到结果
-			if args.ClientId != result.ClientId || args.RequestId != result.RequestId {
-				ServicePrintf("[C.%v][Index.%v]PutAppend Req %+v get wrong result %+v of other Client(%v:%v).", kv.me, index, op, result, result.ClientId, result.RequestId)
+		case result := <-resultChnl:
+			if clientId != result.ClientId || requestId != result.RequestId {
+				ServicePrintf("[C.%v][Index.%v]Cmd Req get wrong result %+v of other Client(%v:%v).",
+					kv.me, index, result, result.ClientId, result.RequestId)
 				// do not return anything, let it timeout
 				// do not delete channel here, let the timeout case do it
 				continue
 			}
-			ServicePrintf("[C.%v][Index.%v]End return %v. %v", kv.me, index, result, op)
-			reply.Err = result.Err
 			kv.mu.Lock()
 			delete(kv.resultChnl, index)
 			kv.mu.Unlock()
-			return
-		case <-time.After(300 * time.Millisecond):
-			ServicePrintf("[C.%v][Index.%v]PutAppend Req %+v timeout.", kv.me, index, op)
-			reply.Err = ErrTimeout
+			return result
+		case <-ctx.Done():
+			ServicePrintf("[C.%v][Index.%v] CMD Req Timeout.", kv.me, index)
 			kv.mu.Lock()
 			delete(kv.resultChnl, index)
 			kv.mu.Unlock()
-			return
+			return OpResult{
+				RequestId: 0,
+				ClientId:  0,
+				Err:       ErrTimeout,
+			}
 		}
 	}
 }
@@ -296,11 +287,7 @@ func (kv *KVServer) DealAppliedCmd() {
 					result.Err = OK
 				}
 				ServicePrintf("[C.%v][Index.%v]Send result(%v) of %v by C.%v", kv.me, msg.CommandIndex, result, cmd, kv.me)
-				select {
-				case ch <- result:
-				default:
-					ServicePrintf("[C.%v][Index.%v]Result Channel full, skip sending result %v of %v", kv.me, msg.CommandIndex, result, cmd)
-				}
+				ch <- result
 			}
 			kv.mu.Unlock()
 		}

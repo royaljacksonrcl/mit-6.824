@@ -308,7 +308,6 @@ func GenericTest(t *testing.T, part string, nclients int, nservers int, unreliab
 			go partitioner(t, cfg, ch_partitioner, &done_partitioner)
 		}
 		time.Sleep(5 * time.Second)
-		log.Printf("Sleep for 5 seconds\n")
 
 		atomic.StoreInt32(&done_clients, 1)     // tell clients to quit
 		atomic.StoreInt32(&done_partitioner, 1) // tell partitioner to quit
