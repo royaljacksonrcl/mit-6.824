@@ -1,5 +1,7 @@
 package shardctrler
 
+import "fmt"
+
 //
 // Shard controler: assigns shards to replication groups.
 //
@@ -29,44 +31,79 @@ type Config struct {
 }
 
 const (
-	OK = "OK"
+	OK             = "OK"
+	ErrWrongLeader = "ErrWrongLeader"
+	ErrNoKey       = "ErrNoKey"
+	ErrTimeout     = "ErrTimeout"
+	ErrMisMatch    = "ErrMisMatch"
 )
 
 type Err string
 
+// 接口
+type BaseArgs interface {
+	GetIdArgs() BasicArgs
+	ToString() string
+}
+
+// 实例基础参数
+type BasicArgs struct {
+	clientId  int64
+	requestId uint64
+}
+
+func (b BasicArgs) GetIdArgs() BasicArgs {
+	return BasicArgs{
+		clientId:  b.clientId,
+		requestId: b.requestId,
+	}
+}
+
+func (b BasicArgs) ToString() string {
+	return fmt.Sprintf("%v/%v", b.clientId, b.requestId)
+}
+
 type JoinArgs struct {
+	BasicArgs
 	Servers map[int][]string // new GID -> servers mappings
 }
 
 type JoinReply struct {
+	BasicArgs
 	WrongLeader bool
 	Err         Err
 }
 
 type LeaveArgs struct {
+	BasicArgs
 	GIDs []int
 }
 
 type LeaveReply struct {
+	BasicArgs
 	WrongLeader bool
 	Err         Err
 }
 
 type MoveArgs struct {
+	BasicArgs
 	Shard int
 	GID   int
 }
 
 type MoveReply struct {
+	BasicArgs
 	WrongLeader bool
 	Err         Err
 }
 
 type QueryArgs struct {
+	BasicArgs
 	Num int // desired config number
 }
 
 type QueryReply struct {
+	BasicArgs
 	WrongLeader bool
 	Err         Err
 	Config      Config
