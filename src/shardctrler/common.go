@@ -48,19 +48,19 @@ type BaseArgs interface {
 
 // 实例基础参数
 type BasicArgs struct {
-	clientId  int64
-	requestId uint64
+	ClientId  int64
+	RequestId uint64
 }
 
 func (b BasicArgs) GetIdArgs() BasicArgs {
 	return BasicArgs{
-		clientId:  b.clientId,
-		requestId: b.requestId,
+		ClientId:  b.ClientId,
+		RequestId: b.RequestId,
 	}
 }
 
 func (b BasicArgs) ToString() string {
-	return fmt.Sprintf("%v/%v", b.clientId, b.requestId)
+	return fmt.Sprintf("%v/%v", b.ClientId, b.RequestId)
 }
 
 type JoinArgs struct {

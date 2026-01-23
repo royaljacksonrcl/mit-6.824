@@ -51,8 +51,8 @@ func (ck *Clerk) Query(num int) Config {
 	ck.mu.Lock()
 	defer ck.mu.Unlock()
 	ck.requestId += 1
-	args.clientId = ck.clientId
-	args.requestId = ck.requestId
+	args.ClientId = ck.clientId
+	args.RequestId = ck.requestId
 
 	meta := ck.meta()
 
@@ -79,14 +79,16 @@ func (ck *Clerk) Join(servers map[int][]string) {
 
 	ck.mu.Lock()
 	defer ck.mu.Unlock()
+	ck.requestId += 1
+	args.ClientId = ck.clientId
+	args.RequestId = ck.requestId
 
 	for {
 		// try each known server.
-		for id, srv := range ck.servers {
+		for _, srv := range ck.servers {
 			var reply JoinReply
 			ok := srv.Call("ShardCtrler.Join", args, &reply)
 			if ok && reply.WrongLeader == false {
-				ck.leaderId = id
 				return
 			}
 		}
@@ -98,6 +100,12 @@ func (ck *Clerk) Leave(gids []int) {
 	args := &LeaveArgs{}
 	// Your code here.
 	args.GIDs = gids
+
+	ck.mu.Lock()
+	defer ck.mu.Unlock()
+	ck.requestId += 1
+	args.ClientId = ck.clientId
+	args.RequestId = ck.requestId
 
 	for {
 		// try each known server.
@@ -117,6 +125,12 @@ func (ck *Clerk) Move(shard int, gid int) {
 	// Your code here.
 	args.Shard = shard
 	args.GID = gid
+
+	ck.mu.Lock()
+	defer ck.mu.Unlock()
+	ck.requestId += 1
+	args.ClientId = ck.clientId
+	args.RequestId = ck.requestId
 
 	for {
 		// try each known server.
