@@ -1,6 +1,10 @@
 package shardctrler
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+	"strings"
+)
 
 //
 // Shard controler: assigns shards to replication groups.
@@ -107,4 +111,12 @@ type QueryReply struct {
 	WrongLeader bool
 	Err         Err
 	Config      Config
+}
+
+func getDebugModule() []string {
+	osEnv := os.Getenv("DEBUG")
+	if osEnv == "" {
+		return []string{}
+	}
+	return strings.Split(osEnv, ",")
 }

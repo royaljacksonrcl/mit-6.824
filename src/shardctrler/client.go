@@ -83,6 +83,10 @@ func (ck *Clerk) Join(servers map[int][]string) {
 	args.ClientId = ck.clientId
 	args.RequestId = ck.requestId
 
+	meta := fmt.Sprintf("[%v]", args.ToString())
+
+	LogPrintf(LogRPC, meta, "Send Join Operation(%+v) to server.", servers)
+
 	for {
 		// try each known server.
 		for _, srv := range ck.servers {

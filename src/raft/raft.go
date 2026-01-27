@@ -133,6 +133,10 @@ func (rf *Raft) GetState() (int, bool) {
 	return term, isleader
 }
 
+func (rf *Raft) Getme() int {
+	return rf.me
+}
+
 func (rf *Raft) VoteChClear() {
 	for {
 		select {

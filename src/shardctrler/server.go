@@ -58,8 +58,6 @@ func (sc *ShardCtrler) Initialize() {
 func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 	// Your code here.
 	sc.mu.Lock()
-	defer sc.mu.Unlock()
-
 	cmd := Op{
 		Type: Join,
 		Args: *args,
@@ -70,8 +68,10 @@ func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 	if !isLeader {
 		reply.WrongLeader = true
 		reply.Err = ErrWrongLeader
+		sc.mu.Unlock()
 		return
 	}
+	sc.mu.Unlock()
 
 	meta := fmt.Sprintf("[%v][Index.%v]", index, args.ToString())
 
@@ -96,8 +96,6 @@ func (sc *ShardCtrler) Move(args *MoveArgs, reply *MoveReply) {
 func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 	// Your code here.
 	sc.mu.Lock()
-	defer sc.mu.Unlock()
-
 	cmd := Op{
 		Type: Query,
 		Args: *args,
@@ -108,14 +106,17 @@ func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 	if !isLeader {
 		reply.WrongLeader = true
 		reply.Err = ErrWrongLeader
+		sc.mu.Unlock()
 		return
 	}
+	sc.mu.Unlock()
 
-	meta := fmt.Sprintf("[%v][Index.%v]", index, args.ToString())
+	meta := fmt.Sprintf("[%v][Index.%v]", args.ToString(), index)
 
+	LogPrintf(LogApply, meta, "Processing:Waiting for OpResult.")
 	result := sc.Processing(index, args.ClientId, args.RequestId, 300*time.Millisecond)
-	reply.Err = reply.Err
-	if result.Err == OK {
+	reply.Err = result.Err
+	if result.Err != ErrTimeout {
 		reply.Config = result.Config
 		return
 	}
@@ -149,6 +150,7 @@ func (sc *ShardCtrler) Processing(index int, clientId int64, reqId uint64, timeo
 				LogPrintf(LogApply, meta, "Receive Op result from %v but not match. Discard this result", result.Args.ToString())
 				continue
 			}
+			LogPrintf(LogApply, meta, "Op is completed with result %+v", result)
 			sc.DestroyChan(index)
 			return result
 		case <-ctx.Done():
@@ -164,6 +166,8 @@ func (sc *ShardCtrler) Processing(index int, clientId int64, reqId uint64, timeo
 
 func (sc *ShardCtrler) DealMsgApplier() {
 	for msg := range sc.applyCh {
+		meta := fmt.Sprintf("[C.%v]", sc.Raft().Getme())
+		LogPrintf(LogApply, meta, "Receive msg.")
 		if msg.SnapshotValid {
 			sc.mu.Lock()
 			if sc.rf.CondInstallSnapshot(msg.SnapshotTerm, msg.SnapshotIndex, msg.Snapshot) {
@@ -174,10 +178,12 @@ func (sc *ShardCtrler) DealMsgApplier() {
 		} else if msg.CommandValid {
 			cmd := msg.Command.(Op)
 			var result OpResult
-			sc.mu.Lock()
-			meta := fmt.Sprintf("[%v][Index.%v]", cmd.Args.ToString(), msg.CommandIndex)
+			meta := fmt.Sprintf("[%v][C.%v][Index.%v]", cmd.Args.ToString(), sc.Raft().Getme(), msg.CommandIndex)
 			LogPrintf(LogApply, meta, "Log Appling.")
+			sc.mu.Lock()
+			LogPrintf(LogApply, meta, "Log Appling Start.")
 			if !sc.isDuplicateRequest(cmd) {
+				LogPrintf(LogApply, meta, "Start to execute command.")
 				result = sc.op_execute(cmd)
 			} else {
 				result.Args = cmd.Args.GetIdArgs()
@@ -186,10 +192,11 @@ func (sc *ShardCtrler) DealMsgApplier() {
 
 			_, isLeader := sc.rf.GetState()
 			if !isLeader {
+				LogPrintf(LogApply, meta, "current rf is not leader, discard the result.")
 				sc.mu.Unlock()
 				continue
 			}
-
+			LogPrintf(LogApply, meta, "Send result(%+v) to Channel.", result)
 			if ch, ok := sc.resultCh[msg.CommandIndex]; ok {
 				ch <- result
 			}
@@ -210,7 +217,7 @@ func (sc *ShardCtrler) rebalance(config *Config) {
 	grp_size := len(config.Groups)
 
 	if grp_size == 0 {
-		for i :=0 ; i < NShards; i++ {
+		for i := 0; i < NShards; i++ {
 			config.Shards[i] = 0
 		}
 	}
@@ -225,7 +232,7 @@ func (sc *ShardCtrler) rebalance(config *Config) {
 		if _, ok := config.Groups[gid]; ok {
 			grp_shards[gid] = append(grp_shards[gid], idx)
 		} else {
-			config.Shards[idx] = 0 
+			config.Shards[idx] = 0
 			waiting_shards = append(waiting_shards, idx)
 		}
 	}
@@ -233,22 +240,22 @@ func (sc *ShardCtrler) rebalance(config *Config) {
 	// 增加 group 数量，分配切片
 	for gid, _ := range config.Groups {
 		if _, ok := grp_shards[gid]; !ok {
-			grp_shards[gid] = make([]int, )
+			grp_shards[gid] = make([]int, 0)
 		} else {
 			counts := len(grp_shards[gid])
 			if counts > average {
-				need_remove_size = counts - average
+				need_remove_size := counts - average
 				if extra > 0 {
 					need_remove_size -= 1
 					extra -= 1
 				}
 				for i := 0; i < need_remove_size; i++ {
-					waiting_shards = append(waiting_shards, grp_shards[gid][counts-1-i])
+					remove_idx := counts - 1 - i
+					waiting_shards = append(waiting_shards, grp_shards[gid][remove_idx])
 				}
 			}
 		}
 	}
-
 
 	// 减少 group 数量，将没有分配的切片进行重新分配
 	for shard_idx := range waiting_shards {
@@ -256,7 +263,6 @@ func (sc *ShardCtrler) rebalance(config *Config) {
 			counts := len(shards)
 			if counts < average || (counts == average && extra > 0) {
 				config.Shards[shard_idx] = gid
-				grp_counts[gid] += 1
 				if counts == average {
 					extra -= 1
 				}
@@ -267,10 +273,16 @@ func (sc *ShardCtrler) rebalance(config *Config) {
 }
 
 func (sc *ShardCtrler) join_exec(args JoinArgs) Err {
-	lastConfig := sc.configs[len(sc.configs)-1]
+	var last_shards [NShards]int
+	if len(sc.configs) > 0 {
+		last_shards = sc.configs[len(sc.configs)-1].Shards
+	}
+
+	meta := fmt.Sprintf("[%v][C.%v]", args.ToString(), sc.Raft().Getme())
+
 	new_config := Config{
 		Num:    len(sc.configs),
-		Shards: lastConfig.Shards, // 复制上一个切片记录
+		Shards: last_shards, // 复制上一个切片记录
 		Groups: make(map[int][]string),
 	}
 
@@ -278,16 +290,41 @@ func (sc *ShardCtrler) join_exec(args JoinArgs) Err {
 		new_config.Groups[gid] = servers
 	}
 
+	LogPrintf(LogApply, meta, "Run rebalance with new config %+v.", new_config)
 	sc.rebalance(&new_config)
+	LogPrintf(LogApply, meta, "rebalance completed.")
 
 	sc.configs = append(sc.configs, new_config)
 	return OK
 }
 
-func (sc *ShardCtrler) query_exec(args QueryArgs, result OpResult) Err {
+func (sc *ShardCtrler) query_exec(args QueryArgs, result *OpResult) Err {
+	meta := fmt.Sprintf("[%v/%v]", args.ClientId, args.RequestId)
+	LogPrintf(LogApply, meta, "Start to Deal Query Command.")
+	result.Args = args.GetIdArgs()
+
 	if args.Num == -1 {
-		last_config := sc.configs[]
+		if len(sc.configs) > 0 {
+			last_config := sc.configs[len(sc.configs)-1]
+			result.Config = last_config
+			LogPrintf(LogApply, meta, "Get Last Config %+v.", result.Config)
+			return OK
+		} else {
+			result.Config = Config{}
+			result.Err = ErrMisMatch
+			LogPrintf(LogApply, meta, "Query Num MisMatched.")
+			return ErrMisMatch
+		}
 	}
+
+	if args.Num < 0 || args.Num >= len(sc.configs) {
+		result.Err = ErrNoKey
+		LogPrintf(LogApply, meta, "Query Num is out of range.")
+		return ErrNoKey
+	}
+
+	result.Config = sc.configs[args.Num]
+	LogPrintf(LogApply, meta, "Get No.%v Config %+v.", args.Num, result.Config)
 
 	return OK
 }
@@ -296,6 +333,8 @@ func (sc *ShardCtrler) op_execute(op Op) OpResult {
 	result := OpResult{
 		Args: op.Args.GetIdArgs(),
 	}
+	meta := fmt.Sprintf("[%v]", op.Args.ToString())
+	LogPrintf(LogApply, meta, "Start to execute %v operation.", op.Type)
 
 	switch op.Type {
 	case Join:
@@ -304,8 +343,8 @@ func (sc *ShardCtrler) op_execute(op Op) OpResult {
 	case Move:
 	case Leave:
 	case Query:
-		Args := op.Args.(QueryArgs)
-		result.Err = sc.query_exec(args)
+		args := op.Args.(QueryArgs)
+		result.Err = sc.query_exec(args, &result)
 	}
 
 	return result
@@ -339,6 +378,10 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 	labgob.Register(Op{})
 	sc.applyCh = make(chan raft.ApplyMsg)
 	sc.rf = raft.Make(servers, me, persister, sc.applyCh)
+
+	// 日志模块初始化
+	topiclist := StringToTopic(getDebugModule())
+	initLogger(topiclist...)
 
 	// 增加接口类
 	labgob.Register(JoinArgs{})
