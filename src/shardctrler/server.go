@@ -226,38 +226,35 @@ func (sc *ShardCtrler) rebalance(config *Config) {
 	extra := NShards % grp_size
 
 	// 更新切片数量观察是否达到平均值，多余的切片分配给随机的组
+	// 增加 group 时需要将超过平均数的 shard 提取出来
+	// 减少 group 时将删除的 gid 的 shard 筛选出来
+	// 这两部分合并在同一个循环里以提高性能
 	waiting_shards := make([]int, 0)
 	grp_shards := make(map[int][]int) // map[gid][]shardIdx
 	for idx, gid := range config.Shards {
-		if _, ok := config.Groups[gid]; ok {
-			grp_shards[gid] = append(grp_shards[gid], idx)
-		} else {
+		if _, ok := config.Groups[gid]; !ok {
 			config.Shards[idx] = 0
 			waiting_shards = append(waiting_shards, idx)
+			continue
 		}
-	}
 
-	// 增加 group 数量，分配切片
-	for gid, _ := range config.Groups {
-		if _, ok := grp_shards[gid]; !ok {
-			grp_shards[gid] = make([]int, 0)
+		group_counts := len(grp_shards[gid])
+		if group_counts > average {
+			if extra > 0 {
+				extra -= 1
+			} else {
+				config.Shards[idx] = 0
+				waiting_shards = append(waiting_shards, idx)
+			}
 		} else {
-			counts := len(grp_shards[gid])
-			if counts > average {
-				need_remove_size := counts - average
-				if extra > 0 {
-					need_remove_size -= 1
-					extra -= 1
-				}
-				for i := 0; i < need_remove_size; i++ {
-					remove_idx := counts - 1 - i
-					waiting_shards = append(waiting_shards, grp_shards[gid][remove_idx])
-				}
+			if group_counts == average {
+				extra -= 1
 			}
 		}
+		grp_shards[gid] = append(grp_shards[gid], idx)
 	}
 
-	// 减少 group 数量，将没有分配的切片进行重新分配
+	// 将没有分配的切片进行重新分配
 	for shard_idx := range waiting_shards {
 		for gid, shards := range grp_shards {
 			counts := len(shards)
@@ -272,10 +269,24 @@ func (sc *ShardCtrler) rebalance(config *Config) {
 	}
 }
 
+func CopyGroups(org map[int][]string) map[int][]string {
+	newGroups := make(map[int][]string)
+	for gid, servers := range org {
+		newServers := make([]string, len(servers))
+		copy(newServers, servers)
+		newGroups[gid] = newServers
+	}
+	return newGroups
+}
+
 func (sc *ShardCtrler) join_exec(args JoinArgs) Err {
 	var last_shards [NShards]int
+	var last_groups map[int][]string
 	if len(sc.configs) > 0 {
 		last_shards = sc.configs[len(sc.configs)-1].Shards
+		last_groups = sc.configs[len(sc.configs)-1].Groups
+	} else {
+		last_groups = make(map[int][]string)
 	}
 
 	meta := fmt.Sprintf("[%v][C.%v]", args.ToString(), sc.Raft().Getme())
@@ -283,7 +294,7 @@ func (sc *ShardCtrler) join_exec(args JoinArgs) Err {
 	new_config := Config{
 		Num:    len(sc.configs),
 		Shards: last_shards, // 复制上一个切片记录
-		Groups: make(map[int][]string),
+		Groups: CopyGroups(last_groups),
 	}
 
 	for gid, servers := range args.Servers {
@@ -295,6 +306,42 @@ func (sc *ShardCtrler) join_exec(args JoinArgs) Err {
 	LogPrintf(LogApply, meta, "rebalance completed.")
 
 	sc.configs = append(sc.configs, new_config)
+	return OK
+}
+
+func (sc *ShardCtrler) move_exec(args MoveArgs) Err {
+	return ErrNotSupport
+}
+
+func (sc *ShardCtrler) leave_exec(args LeaveArgs) Err {
+	var last_shards [NShards]int
+	var last_groups map[int][]string
+	if len(sc.configs) > 0 {
+		last_shards = sc.configs[len(sc.configs)-1].Shards
+		last_groups = sc.configs[len(sc.configs)-1].Groups
+	} else {
+		last_groups = make(map[int][]string)
+	}
+
+	meta := fmt.Sprintf("[%v][C.%v]", args.ToString(), sc.Raft().Getme())
+
+	new_config := Config{
+		Num:    len(sc.configs),
+		Shards: last_shards, // 复制上一个切片记录
+		Groups: CopyGroups(last_groups),
+	}
+
+	for gid := range args.GIDs {
+		if v, ok := new_config.Groups[gid]; ok {
+			LogPrintf(LogApply, meta, "Leave %v from config. Removed group contains %v.", gid, v)
+			delete(new_config.Groups, gid)
+		}
+	}
+
+	sc.rebalance(&new_config)
+
+	sc.configs = append(sc.configs, new_config)
+
 	return OK
 }
 
@@ -341,7 +388,11 @@ func (sc *ShardCtrler) op_execute(op Op) OpResult {
 		args := op.Args.(JoinArgs)
 		result.Err = sc.join_exec(args)
 	case Move:
+		args := op.Args.(MoveArgs)
+		result.Err = sc.move_exec(args)
 	case Leave:
+		args := op.Args.(LeaveArgs)
+		result.Err = sc.leave_exec(args)
 	case Query:
 		args := op.Args.(QueryArgs)
 		result.Err = sc.query_exec(args, &result)

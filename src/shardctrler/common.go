@@ -36,6 +36,7 @@ type Config struct {
 
 const (
 	OK             = "OK"
+	ErrNotSupport  = "ErrNotSupport"
 	ErrWrongLeader = "ErrWrongLeader"
 	ErrNoKey       = "ErrNoKey"
 	ErrTimeout     = "ErrTimeout"

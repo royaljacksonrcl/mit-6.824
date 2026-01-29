@@ -48,6 +48,7 @@ func (ck *Clerk) Query(num int) Config {
 	args := &QueryArgs{}
 	// Your code here.
 	args.Num = num
+
 	ck.mu.Lock()
 	defer ck.mu.Unlock()
 	ck.requestId += 1
@@ -111,6 +112,10 @@ func (ck *Clerk) Leave(gids []int) {
 	args.ClientId = ck.clientId
 	args.RequestId = ck.requestId
 
+	meta := fmt.Sprintf("[%v]", args.ToString())
+
+	LogPrintf(LogRPC, meta, "Send Leave Operation(%+v) to server.", gids)
+
 	for {
 		// try each known server.
 		for _, srv := range ck.servers {
@@ -135,6 +140,10 @@ func (ck *Clerk) Move(shard int, gid int) {
 	ck.requestId += 1
 	args.ClientId = ck.clientId
 	args.RequestId = ck.requestId
+
+	meta := fmt.Sprintf("[%v]", args.ToString())
+
+	LogPrintf(LogRPC, meta, "Send Move Operation(%+v/%+v) to server.", gid, shard)
 
 	for {
 		// try each known server.
