@@ -14,6 +14,7 @@ const (
 	LogRPC
 	LogApply
 	LogSnapshot
+	LogDebug
 	LogError
 )
 
@@ -63,6 +64,7 @@ func StringToTopic(strTopic []string) []LogTopic {
 	}
 
 	topics := make([]LogTopic, 0)
+	topics = append(topics, LogError)
 topic_loop:
 	for _, strTpc := range strTopic {
 		switch strTpc {
@@ -73,10 +75,12 @@ topic_loop:
 		case "SNAP":
 			topics = append(topics, LogSnapshot)
 		case "ERR":
-			topics = append(topics, LogError)
+			// 默认开启
+		case "DBG":
+			topics = append(topics, LogDebug)
 		case "ALL":
 			topics = make([]LogTopic, 0)
-			topics = append(topics, LogRPC, LogApply, LogSnapshot, LogError, LogNone)
+			topics = append(topics, LogRPC, LogApply, LogSnapshot, LogDebug, LogNone)
 			break topic_loop
 		default:
 			log.Printf("init unknown Topic %v", strTpc)

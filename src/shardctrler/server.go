@@ -52,7 +52,6 @@ func (sc *ShardCtrler) Initialize() {
 
 	sc.LastAppliedOpIdx = make(map[int64]uint64)
 	sc.resultCh = make(map[int]chan OpResult)
-	sc.configs = make([]Config, 0)
 }
 
 func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
@@ -87,10 +86,60 @@ func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 
 func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
 	// Your code here.
+	sc.mu.Lock()
+	cmd := Op{
+		Type: Leave,
+		Args: *args,
+	}
+
+	// Submit to Raft
+	index, _, isLeader := sc.rf.Start(cmd)
+	if !isLeader {
+		reply.WrongLeader = true
+		reply.Err = ErrWrongLeader
+		sc.mu.Unlock()
+		return
+	}
+	sc.mu.Unlock()
+
+	meta := fmt.Sprintf("[%v][Index.%v]", index, args.ToString())
+
+	result := sc.Processing(index, args.ClientId, args.RequestId, 300*time.Millisecond)
+	reply.Err = result.Err
+	if result.Err == OK {
+		return
+	}
+
+	LogPrintf(LogApply, meta, "Process Query Operation Timeout.")
 }
 
 func (sc *ShardCtrler) Move(args *MoveArgs, reply *MoveReply) {
 	// Your code here.
+	sc.mu.Lock()
+	cmd := Op{
+		Type: Move,
+		Args: *args,
+	}
+
+	// Submit to Raft
+	index, _, isLeader := sc.rf.Start(cmd)
+	if !isLeader {
+		reply.WrongLeader = true
+		reply.Err = ErrWrongLeader
+		sc.mu.Unlock()
+		return
+	}
+	sc.mu.Unlock()
+
+	meta := fmt.Sprintf("[%v][Index.%v]", index, args.ToString())
+
+	result := sc.Processing(index, args.ClientId, args.RequestId, 300*time.Millisecond)
+	reply.Err = result.Err
+	if result.Err == OK || result.Err == ErrNoKey || result.Err == ErrNotSupport {
+		return
+	}
+
+	LogPrintf(LogApply, meta, "Process Query Operation Timeout.")
 }
 
 func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
@@ -214,12 +263,16 @@ func (sc *ShardCtrler) isDuplicateRequest(op Op) bool {
 }
 
 func (sc *ShardCtrler) rebalance(config *Config) {
+	meta := fmt.Sprintf("[Rebalance][C.%v][Config.%v]", sc.Raft().Getme(), config.Groups)
+	LogPrintf(LogDebug, meta, "Start to rebalance.")
+
 	grp_size := len(config.Groups)
 
 	if grp_size == 0 {
 		for i := 0; i < NShards; i++ {
 			config.Shards[i] = 0
 		}
+		return
 	}
 
 	average := NShards / grp_size
@@ -240,26 +293,34 @@ func (sc *ShardCtrler) rebalance(config *Config) {
 
 		group_counts := len(grp_shards[gid])
 		if group_counts > average {
-			if extra > 0 {
+			config.Shards[idx] = 0
+			waiting_shards = append(waiting_shards, idx)
+		} else {
+			// 分 3 种情况
+			// - 小于平局数时，统计当前 gid 被分配的 shards 数量
+			// - 等于平均数时，当 extra 大于 0 时，保留当前的 gid 的分配 shard，并对 extra 自减 进行分配确认，并记录到 gid 的分配 shards 数量中
+			// - 大于平局数时，将当前 gid 对应的 shard 移动到等待分组的队列中，并重置 shard 的对应 gid 为 0，确保 shard 的 gid 不会指向已经移除的 group
+			if group_counts < average {
+				grp_shards[gid] = append(grp_shards[gid], idx)
+			} else if group_counts == average && extra > 0 {
 				extra -= 1
+				grp_shards[gid] = append(grp_shards[gid], idx)
 			} else {
 				config.Shards[idx] = 0
 				waiting_shards = append(waiting_shards, idx)
 			}
-		} else {
-			if group_counts == average {
-				extra -= 1
-			}
 		}
-		grp_shards[gid] = append(grp_shards[gid], idx)
 	}
 
+	LogPrintf(LogDebug, meta, "Rebalance finish to find unassigned shards %+v, current group shards %+v.", waiting_shards, grp_shards)
+
 	// 将没有分配的切片进行重新分配
-	for shard_idx := range waiting_shards {
-		for gid, shards := range grp_shards {
-			counts := len(shards)
+	for _, idx := range waiting_shards {
+		for gid := range config.Groups {
+			counts := len(grp_shards[gid])
 			if counts < average || (counts == average && extra > 0) {
-				config.Shards[shard_idx] = gid
+				config.Shards[idx] = gid
+				grp_shards[gid] = append(grp_shards[gid], idx)
 				if counts == average {
 					extra -= 1
 				}
@@ -267,6 +328,8 @@ func (sc *ShardCtrler) rebalance(config *Config) {
 			}
 		}
 	}
+
+	LogPrintf(LogApply, "[Rebalance]", "Rebalance completed with new shard distribution %+v.", grp_shards)
 }
 
 func CopyGroups(org map[int][]string) map[int][]string {
@@ -282,12 +345,8 @@ func CopyGroups(org map[int][]string) map[int][]string {
 func (sc *ShardCtrler) join_exec(args JoinArgs) Err {
 	var last_shards [NShards]int
 	var last_groups map[int][]string
-	if len(sc.configs) > 0 {
-		last_shards = sc.configs[len(sc.configs)-1].Shards
-		last_groups = sc.configs[len(sc.configs)-1].Groups
-	} else {
-		last_groups = make(map[int][]string)
-	}
+	last_shards = sc.configs[len(sc.configs)-1].Shards
+	last_groups = sc.configs[len(sc.configs)-1].Groups
 
 	meta := fmt.Sprintf("[%v][C.%v]", args.ToString(), sc.Raft().Getme())
 
@@ -331,12 +390,18 @@ func (sc *ShardCtrler) leave_exec(args LeaveArgs) Err {
 		Groups: CopyGroups(last_groups),
 	}
 
-	for gid := range args.GIDs {
+	LogPrintf(LogApply, meta, "Start to leave %+v.", args.GIDs)
+
+	for _, gid := range args.GIDs {
+		LogPrintf(LogApply, meta, "Check Leave %v.", gid)
 		if v, ok := new_config.Groups[gid]; ok {
 			LogPrintf(LogApply, meta, "Leave %v from config. Removed group contains %v.", gid, v)
 			delete(new_config.Groups, gid)
 		}
+		LogPrintf(LogApply, meta, "Finish Leave %v, current Groups %+v.", gid, new_config.Groups)
 	}
+
+	LogPrintf(LogApply, meta, "Finish Leave and rebalance with new config %+v.", new_config)
 
 	sc.rebalance(&new_config)
 
