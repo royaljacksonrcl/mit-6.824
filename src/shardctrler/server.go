@@ -3,6 +3,7 @@ package shardctrler
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -315,8 +316,15 @@ func (sc *ShardCtrler) rebalance(config *Config) {
 	LogPrintf(LogDebug, meta, "Rebalance finish to find unassigned shards %+v, current group shards %+v.", waiting_shards, grp_shards)
 
 	// 将没有分配的切片进行重新分配
+	// 对组ID进行排序，确保分配顺序的一致性
+	var gids []int
+	for gid := range config.Groups {
+		gids = append(gids, gid)
+	}
+	sort.Ints(gids)
+
 	for _, idx := range waiting_shards {
-		for gid := range config.Groups {
+		for _, gid := range gids {
 			counts := len(grp_shards[gid])
 			if counts < average || (counts == average && extra > 0) {
 				config.Shards[idx] = gid
